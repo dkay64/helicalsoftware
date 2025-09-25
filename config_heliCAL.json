@@ -1,0 +1,11 @@
+{
+  "resolution": 96,
+  "num_angles": 120,
+  "ray_type": "parallel",
+  "proj_threshold": 0.5,
+  "pixel_size_mm": 0.1,
+  "feedrate": 1200,
+  "laser_power_on": 255,
+  "laser_power_off": 0,
+  "dwell_ms": 2
+}
