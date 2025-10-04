@@ -4,7 +4,10 @@ import threading
 import time
 
 from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QPushButton, QFileDialog, QLabel, QHBoxLayout, QLineEdit, QTextEdit, QMessageBox
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QPushButton,
+    QFileDialog, QLabel, QHBoxLayout, QLineEdit, QTextEdit, QMessageBox
+)
 from PyQt5.QtGui import QImage, QPixmap
 import serial
 import cv2
@@ -12,26 +15,18 @@ import cv2
 class HeliCALGui(QMainWindow):
     """
     Main GUI for the HeliCAL Control Panel.
-
-    This class builds a tabbed interface with buttons and controls for running calibration, rotation, printing, balancing, and camera feed.
     """
     def __init__(self):
         super().__init__()
-        """
-        Initialize the main window, state variables, and all UI tabs.
-
-        Sets up:
-        - Window title and default size
-        - Serial port placeholder (for ESP32 connection)
-        - Camera capture placeholder
-        - Tab widget and calls individual builders
-        """
         self.setWindowTitle("HeliCAL Control Panel")
         self.resize(800, 600)
 
-        # Placeholder for serial communication and camera stream
+        # Placeholders for serial & camera
         self.serial_port = None
         self.camera = None
+
+        # Runtime-configurable counts per theta revolution (default from system inference)
+        self.counts_per_theta_rev = 245426  # editable in UI
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -42,13 +37,8 @@ class HeliCALGui(QMainWindow):
         self._build_balance_tab()
         self._build_camera_tab()
 
+    # ---------------- Tabs ----------------
     def _build_calibration_tab(self):
-        """
-        Create the 'Calibration' tab.
-
-        Adds a button that launches the external calibration executable:
-        Assumes 'cal6_calibrate' is in your system PATH or working directory.
-        """
         tab = QWidget()
         layout = QVBoxLayout()
 
@@ -60,31 +50,31 @@ class HeliCALGui(QMainWindow):
         self.tabs.addTab(tab, "Calibration")
 
     def _build_rotation_tab(self):
-        """
-        Create the 'Rotation' tab.
-
-        Provides:
-        - A QLineEdit to specify the serial port (default '/dev/ttyTHS1').
-        - A button to connect to the ESP32 over UART at 115200 baud.
-        - Buttons to start (9 RPM) and stop rotation by sending velocity commands.
-        """
         tab = QWidget()
         layout = QVBoxLayout()
 
-        # serial port entry and connect button
-        hbox = QHBoxLayout()
-        self.port_input = QLineEdit("/dev/ttyTHS1") # Default Jetson UART port
+        # Serial connect row
+        hbox1 = QHBoxLayout()
+        self.port_input = QLineEdit("/dev/ttyTHS1")
         btn_connect = QPushButton("Connect ESP32")
         btn_connect.clicked.connect(self.connect_esp32)
-        hbox.addWidget(QLabel("Serial Port:"))
-        hbox.addWidget(self.port_input)
-        hbox.addWidget(btn_connect)
-        layout.addLayout(hbox)
+        hbox1.addWidget(QLabel("Serial Port:"))
+        hbox1.addWidget(self.port_input)
+        hbox1.addWidget(btn_connect)
+        layout.addLayout(hbox1)
 
+        # Counts-per-rev row (editable)
+        hbox2 = QHBoxLayout()
+        self.cpr_input = QLineEdit(str(self.counts_per_theta_rev))
+        hbox2.addWidget(QLabel("Counts per θ-rev:"))
+        hbox2.addWidget(self.cpr_input)
+        layout.addLayout(hbox2)
+
+        # Controls
         btn_start = QPushButton("Start Rotation (9 RPM)")
-        btn_start.clicked.connect(lambda: self.send_theta_velocity(9))
+        btn_start.clicked.connect(lambda: self.send_theta_velocity_rpm(9))
         btn_stop = QPushButton("Stop Rotation")
-        btn_stop.clicked.connect(lambda: self.send_theta_velocity(0))
+        btn_stop.clicked.connect(lambda: self.send_theta_velocity_rpm(0))
         layout.addWidget(btn_start)
         layout.addWidget(btn_stop)
 
@@ -92,20 +82,13 @@ class HeliCALGui(QMainWindow):
         self.tabs.addTab(tab, "Rotation")
 
     def _build_print_tab(self):
-        """
-        Create the 'Print' tab.
-
-        Enables:
-        - Selecting an MP4 video file via file dialog.
-        - Launching the multi-pass z-translation print executable with arguments.
-        """
         tab = QWidget()
         layout = QVBoxLayout()
 
         btn_select_video = QPushButton("Select Video File")
         btn_select_video.clicked.connect(self.select_video)
         layout.addWidget(btn_select_video)
-        self.video_path = QLineEdit() # Display selected file path
+        self.video_path = QLineEdit()
         layout.addWidget(self.video_path)
 
         btn_print = QPushButton("Start Z-Translation Multi-Pass Print")
@@ -116,12 +99,6 @@ class HeliCALGui(QMainWindow):
         self.tabs.addTab(tab, "Print")
 
     def _build_balance_tab(self):
-        """
-        Create the 'Balancing' tab.
-
-        Adds a button to start the real-time balancing routine.
-        Expects './cal6_balance' executable available.
-        """
         tab = QWidget()
         layout = QVBoxLayout()
 
@@ -133,15 +110,6 @@ class HeliCALGui(QMainWindow):
         self.tabs.addTab(tab, "Balancing")
 
     def _build_camera_tab(self):
-        """
-        Create the 'Camera' tab.
-
-        Shows live video feed from the default camera (index 0).
-        Includes:
-        - QLabel for image display
-        - Button to open camera and begin frame updates
-        - QTimer to refresh frames at regular intervals
-        """
         tab = QWidget()
         layout = QVBoxLayout()
 
@@ -158,32 +126,61 @@ class HeliCALGui(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
 
+    # ---------------- Helpers ----------------
     def run_calibration(self):
-        """
-        Launch the calibration executable in a separate thread.
-
-        Uses subprocess.run to call './cal6_calibrate'.
-        Runs detached to avoid blocking the UI.
-        """
         threading.Thread(target=lambda: subprocess.run(['./cal6_calibrate'], check=True)).start()
 
     def connect_esp32(self):
         port = self.port_input.text().strip()
         try:
-            self.serial_port = serial.Serial(port, 115200, timeout=0.1)
+            self.serial_port = serial.Serial(port, 115200, timeout=0.2)
             QMessageBox.information(self, "ESP32", f"Connected to {port}")
         except Exception as e:
             QMessageBox.critical(self, "ESP32", f"Failed to open {port}: {e}")
 
-    def send_theta_velocity(self, rpm):
+    def rpm_to_pulses_per_sec(self, rpm: float) -> int:
+        """
+        Convert rpm on the theta axis to encoder pulses/sec using counts_per_theta_rev.
+        pulses/sec = rpm * counts_per_theta_rev / 60
+        """
+        try:
+            # Refresh from UI (allows live edits)
+            self.counts_per_theta_rev = int(float(self.cpr_input.text().strip()))
+        except Exception:
+            self.counts_per_theta_rev = 245426
+            self.cpr_input.setText(str(self.counts_per_theta_rev))
+
+        return int(round((rpm * self.counts_per_theta_rev) / 60.0))
+
+    # ---- NEW: velocity command using 0x30/0x01 (THETA_VEL_SET) ----
+    def send_theta_velocity_rpm(self, rpm: float):
+        """
+        Sends a closed-loop velocity command to firmware:
+          [0x30, 0x01, <int32_le pulses/sec>]
+        """
         if not self.serial_port:
             QMessageBox.warning(self, "ESP32", "Connect to ESP32 first.")
             return
-        # velocity in encoder counts/sec: 245426 * rpm / 60
-        velocity = int(245426 * rpm / 60)
-        cmd = bytearray([0x20, 0x20]) + velocity.to_bytes(4, 'little', signed=True)
-        self.serial_port.write(cmd)
 
+        # Convert rpm -> pulses/sec
+        pps = self.rpm_to_pulses_per_sec(rpm)
+
+        # Build command (6 bytes total)
+        cmd = bytearray([0x30, 0x01]) + int(pps).to_bytes(4, 'little', signed=True)
+
+        try:
+            # Optional: clear any stale bytes then send
+            self.serial_port.reset_input_buffer()
+            self.serial_port.write(cmd)
+            self.serial_port.flush()
+
+            # Optional: read 1-byte ACK (firmware writes back a single 0x01)
+            ack = self.serial_port.read(1)
+            # You can log/ignore ack; not fatal if missing due to timing
+        except Exception as e:
+            QMessageBox.critical(self, "UART", f"Failed to send velocity: {e}")
+
+    # ---------------- Print / Balance / Camera ----------------
     def select_video(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select MP4 Video", "", "Video Files (*.mp4)")
         if path:
@@ -194,8 +191,10 @@ class HeliCALGui(QMainWindow):
         if not video:
             QMessageBox.warning(self, "Print", "Select a video file first.")
             return
-        cmd = ['./cal6_print_z_translation_multi_pass', video, 'output.mp4',
-               '--crop_height_px', '800', '--cycles_per_pass', '1', '--deg_per_sec', '9']
+        cmd = [
+            './cal6_print_z_translation_multi_pass', video, 'output.mp4',
+            '--crop_height_px', '800', '--cycles_per_pass', '1', '--deg_per_sec', '9'
+        ]
         threading.Thread(target=lambda: subprocess.run(cmd, check=True)).start()
 
     def run_balancing(self):
