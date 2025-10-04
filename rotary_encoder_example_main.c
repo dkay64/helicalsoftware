@@ -17,20 +17,49 @@
 static const char *TAG = "UART_SLAVE";
 
 //------------------------------------------------------------------------------
-// PID state for theta velocity controller (now global)
+// System/Encoder constants (centralized)
+//------------------------------------------------------------------------------
+// Measured counts per *theta* revolution (post-gearbox). This replaces the
+// previously "magic" 245,426 value sprinkled in the host code.
+#ifndef COUNTS_PER_THETA_REV
+#define COUNTS_PER_THETA_REV 245426
+#endif
+
+// Helper conversions
+#define RPM_TO_PPS(rpm)  ( (int32_t) llround( ((double)(rpm) * (double)COUNTS_PER_THETA_REV) / 60.0 ) )
+#define PPS_TO_RPM(pps)  ( ((double)(pps) * 60.0) / (double)COUNTS_PER_THETA_REV )
+
+// Percent of a full revolution at which we look for the second beam-break during zeroing
+#ifndef ZERO_SECOND_FALL_FRACTION
+#define ZERO_SECOND_FALL_FRACTION 0.85
+#endif
+
+// Glitch filter (nanoseconds)
+#ifndef PCNT_GLITCH_NS
+#define PCNT_GLITCH_NS 3000
+#endif
+
+// DIR polarity: set to 1 if "forward" should drive DIR=1, else 0
+#ifndef DC_DIR_FORWARD_LEVEL
+#define DC_DIR_FORWARD_LEVEL 1
+#endif
+
+//------------------------------------------------------------------------------
+// PID state for theta velocity controller (global)
 //------------------------------------------------------------------------------
 static double pid_integral    = 0.0;
 static double pid_prev_error  = 0.0;
 static int    pid_last_pwm    = 0;
 
+// Measured velocity (pulses/sec), updated by theta_velocity_task
+static volatile int32_t measured_theta_velocity = 0;
+
 //------------------------------------------------------------------------------
-// Task Notification Bit for beam‑break → zeroing
-// keep track of last break position
+// Task Notification Bit for beam-break → zeroing
 //------------------------------------------------------------------------------
 #define NOTIF_FALL_BIT  (1u << 0)
 static int32_t last_break_count = 0;
-// how long to ignore further breaks (in ticks)
-#define BB_DEBOUNCE_TIME_MS   2000  
+#define BB_DEBOUNCE_TIME_MS   2000
 static TickType_t last_bb_tick = 0;
 
 //------------------------------------------------------------------------------
@@ -45,7 +74,8 @@ static TickType_t last_bb_tick = 0;
 #define DC_SUB_DIR            0x02
 // --- Theta Velocity (PID) Commands (first byte 0x30) ---
 #define CMD_THETA_VEL         0x30
-#define THETA_VEL_SET         0x01
+#define THETA_VEL_SET         0x01   // payload: int32_le pulses/sec
+#define THETA_VEL_GET         0x02   // response: int32_le measured pulses/sec
 // --- Theta Zeroing Commands (first byte 0x40) ---
 #define CMD_THETA_ZERO        0x40
 #define THETA_ZERO_START      0x01
@@ -59,16 +89,16 @@ static TickType_t last_bb_tick = 0;
 #define PCNT_LOW_LIMIT   -32768
 
 // Encoder pins
-#define ENC_1_A GPIO_NUM_9 //TW R A
-#define ENC_1_B GPIO_NUM_10 //TW R B
-#define ENC_2_A GPIO_NUM_6 //TW T A
-#define ENC_2_B GPIO_NUM_7 //TW T B
-#define ENC_3_A GPIO_NUM_3 //Theta A
-#define ENC_3_B GPIO_NUM_8 //Theta B
-#define ENC_4_A GPIO_NUM_1 //CW T A
-#define ENC_4_B GPIO_NUM_2 //CW T B
-#define ENC_5_A GPIO_NUM_4 //CW R A
-#define ENC_5_B GPIO_NUM_5 //CW R B
+#define ENC_1_A GPIO_NUM_9  // TW R A
+#define ENC_1_B GPIO_NUM_10 // TW R B
+#define ENC_2_A GPIO_NUM_6  // TW T A
+#define ENC_2_B GPIO_NUM_7  // TW T B
+#define ENC_3_A GPIO_NUM_3  // Theta A
+#define ENC_3_B GPIO_NUM_8  // Theta B
+#define ENC_4_A GPIO_NUM_1  // CW T A
+#define ENC_4_B GPIO_NUM_2  // CW T B
+#define ENC_5_A GPIO_NUM_4  // CW R A
+#define ENC_5_B GPIO_NUM_5  // CW R B
 
 volatile int32_t total_counts[5] = {0};
 pcnt_unit_handle_t pcnt_units[5] = {NULL};
@@ -103,7 +133,7 @@ static void init_encoder(int idx, gpio_num_t a, gpio_num_t b, pcnt_unit_handle_t
 
     // glitch‐filter
     pcnt_glitch_filter_config_t fcfg = {
-        .max_glitch_ns = 3000,
+        .max_glitch_ns = PCNT_GLITCH_NS,
     };
     ESP_ERROR_CHECK(pcnt_unit_set_glitch_filter(*unit, &fcfg));
 
@@ -157,8 +187,8 @@ static void init_encoders(void)
     init_encoder(1, ENC_2_A, ENC_2_B, &pcnt_units[1]);
     init_encoder(2, ENC_3_A, ENC_3_B, &pcnt_units[2]);
     init_encoder(3, ENC_4_A, ENC_4_B, &pcnt_units[3]);
-    //ESP32-S2 Only have 4 PCNT counters ;( 
-    //init_encoder(4, ENC_5_A, ENC_5_B, &pcnt_units[4]);
+    // ESP32-S2 Only has 4 PCNT counters
+    // init_encoder(4, ENC_5_A, ENC_5_B, &pcnt_units[4]);
 }
 
 static void update_encoder_positions(int32_t *pos)
@@ -181,6 +211,19 @@ static void update_encoder_positions(int32_t *pos)
 #define DC_PWM_FREQ_HZ   5000
 #define DC_PWM_DUTY_RES  LEDC_TIMER_8_BIT
 #define DC_DIR_GPIO      GPIO_NUM_12
+
+static inline void dc_apply_pwm_and_dir(int pwm_abs, int dir_forward)
+{
+    // clamp
+    if (pwm_abs < 0) pwm_abs = 0;
+    if (pwm_abs > 255) pwm_abs = 255;
+
+    // set direction first to avoid brief reverse torque
+    gpio_set_level(DC_DIR_GPIO, dir_forward ? DC_DIR_FORWARD_LEVEL : !DC_DIR_FORWARD_LEVEL);
+
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, DC_PWM_CHANNEL, pwm_abs);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, DC_PWM_CHANNEL);
+}
 
 static void init_dc_driver(void)
 {
@@ -213,7 +256,7 @@ static void init_dc_driver(void)
     };
     ESP_ERROR_CHECK(gpio_config(&gcfg));
 
-    // I2C Lines
+    // Example extra lines left as-is (I2C lines used elsewhere)
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL<<44) | (1ULL<<43),
         .mode         = GPIO_MODE_INPUT,
@@ -245,38 +288,23 @@ static void init_uart(void)
 }
 
 //------------------------------------------------------------------------------
-// Break‑Beam for Zeroing
+// Break-Beam for Zeroing
 //------------------------------------------------------------------------------
 #define BB_PIN GPIO_NUM_11
 static TaskHandle_t thetaZeroTaskHandle = NULL;
 
 static void IRAM_ATTR bb_isr_handler(void* arg)
 {
-    // 1) Debounce: ignore falls for BB_DEBOUNCE_TIME_MS after the last one
     TickType_t tick = xTaskGetTickCountFromISR();
     if (tick - last_bb_tick < pdMS_TO_TICKS(BB_DEBOUNCE_TIME_MS)) {
         return;
     }
     last_bb_tick = tick;
 
-    // 2) grab the raw PCNT count
-    int raw_cnt = 0;
-    pcnt_unit_get_count(pcnt_units[2], &raw_cnt);
-
-    // 3) compute full position = hardware + overflow
-    //int32_t pos = total_counts[2] + raw_cnt;
-
-    // 4) compute delta since last break
-    //int32_t diff = pos - last_break_count;
-    //last_break_count = pos;
-
-    // 5) log it (ISR‐safe)
-    //ESP_EARLY_LOGI(TAG, "Beam break Δtheta = %" PRId32 " pulses", diff);
-
-    // 6) notify the zeroing state‐machine
-    //BaseType_t woken = pdFALSE;
-    //xTaskNotifyFromISR(thetaZeroTaskHandle, NOTIF_FALL_BIT, eSetBits, &woken);
-    //if (woken) portYIELD_FROM_ISR();
+    // If you later re-enable fall notifications, you can notify here
+    // BaseType_t woken = pdFALSE;
+    // xTaskNotifyFromISR(thetaZeroTaskHandle, NOTIF_FALL_BIT, eSetBits, &woken);
+    // if (woken) portYIELD_FROM_ISR();
 }
 
 static void init_bb_interrupt(void)
@@ -304,7 +332,7 @@ static void theta_zeroing_task(void *arg)
     uint32_t notif;
     while (1) {
         xTaskNotifyWait(0, 0xFFFFFFFF, &notif, pdMS_TO_TICKS(10));
-        if (notif & 1) {
+        if (notif & NOTIF_FALL_BIT) {
             if (state == TH_FALL1) {
                 total_counts[2] = 0;
                 ESP_ERROR_CHECK(pcnt_unit_clear_count(pcnt_units[2]));
@@ -328,7 +356,8 @@ static void theta_zeroing_task(void *arg)
         if (state == TH_LOOP) {
             int cnt = 0;
             ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_units[2], &cnt));
-            if (total_counts[2] + cnt > 210000) {
+            // wait until we have ~85% of a revolution before arming for the second fall
+            if (total_counts[2] + cnt > (int32_t)(ZERO_SECOND_FALL_FRACTION * (double)COUNTS_PER_THETA_REV)) {
                 state = TH_FALL2;
             }
         }
@@ -337,81 +366,77 @@ static void theta_zeroing_task(void *arg)
 }
 
 //------------------------------------------------------------------------------
-// Theta Velocity Task (PID, 0x30)
+// Theta Velocity Task (PID, 0x30) - signed control with DIR
 //------------------------------------------------------------------------------
-static volatile int32_t desired_theta_velocity = 0;
+static volatile int32_t desired_theta_velocity = 0; // pulses/sec (signed)
 static volatile bool    pid_enabled           = false;
 
 static void theta_velocity_task(void *arg)
 {
     int prev_enc = 0, cur_enc = 0;
-    const double dt = 0.02;
-    const double kp = 0.06, ki = 0.005, kd = 0.0;
+    const double dt = 0.02; // 50 Hz
+    // Start with conservative gains; tune as needed
+    double kp = 0.06, ki = 0.005, kd = 0.0;
 
-    // prime the prev_enc
+    // prime prev_enc
     ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_units[2], &prev_enc));
     prev_enc += total_counts[2];
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS((int)(dt * 1000.0)));
 
+        // maintain baseline when disabled
         if (!pid_enabled) {
-            // keep encoder baseline up‑to‑date
             ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_units[2], &cur_enc));
             prev_enc = cur_enc + total_counts[2];
+            // also force PWM=0 when disabled
+            dc_apply_pwm_and_dir(0, /*forward=*/1);
+            measured_theta_velocity = 0;
             continue;
         }
 
-        // 1) read encoder
+        // 1) read encoder, compute signed measured pps
         ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_units[2], &cur_enc));
         cur_enc += total_counts[2];
+        int32_t delta = cur_enc - prev_enc;    // signed by quadrature
+        prev_enc = cur_enc;
+        double measured = delta / dt;          // pulses/sec (signed)
+        measured_theta_velocity = (int32_t) llround(measured);
 
-        // 2) compute measured velocity (pulses/sec)
-        int32_t delta = cur_enc - prev_enc;
-        double measured = delta / dt;
-
-        // 3) PID math
+        // 2) PID on signed velocity
         double err   = (double)desired_theta_velocity - measured;
         pid_integral += err * dt;
         double deriv = (err - pid_prev_error) / dt;
         pid_prev_error = err;
-        prev_enc = cur_enc;
 
-        double P = kp * err;
-        double I = ki * pid_integral;
-        double D = kd * deriv;
-        double out = P + I + D;
+        double u = kp*err + ki*pid_integral + kd*deriv;
 
-        // 4) saturate & slew‐rate limit
-        out = fmin(fmax(out, 0.0), 255.0);
-        {
-            int step = (int)out - pid_last_pwm;
-            const int max_step = 5;
-            if      (step >  max_step) out = pid_last_pwm + max_step;
-            else if (step < -max_step) out = pid_last_pwm - max_step;
-        }
-        pid_last_pwm = (int)out;
+        // 3) Output mapping: direction from sign(u), magnitude to PWM with slew limit
+        int dir_forward = (u >= 0.0) ? 1 : 0;
+        double mag = fabs(u);
 
-        // 5) apply PWM
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, DC_PWM_CHANNEL, pid_last_pwm);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, DC_PWM_CHANNEL);
+        // Saturate magnitude
+        if (mag > 255.0) mag = 255.0;
 
-        // 6) log using the correct locals
+        // Slew-rate limit on PWM steps
+        int target_pwm = (int)mag;
+        int step = target_pwm - pid_last_pwm;
+        const int max_step = 5;
+        if      (step >  max_step) target_pwm = pid_last_pwm + max_step;
+        else if (step < -max_step) target_pwm = pid_last_pwm - max_step;
+        pid_last_pwm = target_pwm;
+
+        // 4) Apply to hardware
+        dc_apply_pwm_and_dir(pid_last_pwm, dir_forward);
+
+        // Optional debug
         /*
         ESP_LOGI(TAG,
-            "Velocity Task: Desired %" PRId32
-            ", Meas %.2f"
-            ", Err %.2f (%.2f PWM)"
-            ", I %.2f (%.2f PWM)"
-            ", D %.2f (%.2f PWM)"
-            ", PWM %d",
+            "vel: des=%" PRId32 " meas=%" PRId32 " pps (%.3f rpm) err=%.1f pwm=%d dir=%d",
             desired_theta_velocity,
-            measured,
-            err,        P,
-            pid_integral, I,
-            deriv,      D,
-            pid_last_pwm
-        );
+            measured_theta_velocity,
+            PPS_TO_RPM(measured_theta_velocity),
+            err, pid_last_pwm, dir_forward);
         */
     }
 }
@@ -425,18 +450,16 @@ static void uart_slave_task(void *arg)
     while (1) {
         int len = uart_read_bytes(UART_NUM_1, cmd, 6, pdMS_TO_TICKS(100));
         if (len == 6) {
-            // Log the raw command bytes
-            ESP_LOGI(TAG, "UART received command: 0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X, 0x%02X",
+            ESP_LOGI(TAG, "UART received: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X",
                      cmd[0], cmd[1], cmd[2], cmd[3], cmd[4], cmd[5]);
 
             switch (cmd[0]) {
                 case CMD_ENCODER_POSITION: {
-                    ESP_LOGI(TAG, "  -> CMD_ENCODER_POSITION, subcmd=0x%02X", cmd[1]);
                     if (cmd[1] == ENCODER_ALL) {
                         int32_t p[5];
                         update_encoder_positions(p);
                         uart_write_bytes(UART_NUM_1, (char*)p, sizeof(p));
-                    } else if (cmd[1] < 4) { //Esp32-S2 only have 4 PCNT counters 
+                    } else if (cmd[1] < 4) { // ESP32-S2 only has 4 PCNT counters
                         int cnt = 0;
                         ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_units[cmd[1]], &cnt));
                         int32_t v = total_counts[cmd[1]] + cnt;
@@ -445,51 +468,62 @@ static void uart_slave_task(void *arg)
                     uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(100));
                     break;
                 }
+
                 case CMD_DC_DRIVER:
-                    ESP_LOGI(TAG, "  -> CMD_DC_DRIVER, subcmd=0x%02X, val=%d", cmd[1], cmd[2]);
-                    pid_integral = pid_prev_error = pid_last_pwm = 0;
+                    // Manual DC control disables PID
+                    pid_integral = 0.0;
+                    pid_prev_error = 0.0;
+                    pid_last_pwm = 0;
                     pid_enabled = false;
                     if (cmd[1] == DC_SUB_PWM) {
+                        // direct PWM (no sign) keeps last DIR
                         ledc_set_duty(LEDC_LOW_SPEED_MODE, DC_PWM_CHANNEL, cmd[2]);
                         ledc_update_duty(LEDC_LOW_SPEED_MODE, DC_PWM_CHANNEL);
                     } else {
-                        gpio_set_level(DC_DIR_GPIO, cmd[2] ? 1 : 0);
+                        // set DIR explicitly
+                        gpio_set_level(DC_DIR_GPIO, cmd[2] ? DC_DIR_FORWARD_LEVEL : !DC_DIR_FORWARD_LEVEL);
                     }
                     break;
+
                 case CMD_THETA_VEL:
-                    ESP_LOGI(TAG, "  -> CMD_THETA_VEL, subcmd=0x%02X", cmd[1]);
                     if (cmd[1] == THETA_VEL_SET) {
-                        // reset PID
+                        // reset PID state
                         pid_integral   = 0.0;
                         pid_prev_error = 0.0;
                         pid_last_pwm   = 0;
-                        // ack
-                        {
-                            uint8_t a = 1;
-                            uart_write_bytes(UART_NUM_1, (char*)&a, 1);
-                            uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(100));
-                        }
-                        // parse little‑endian velocity
+
+                        // ack (1 byte)
+                        uint8_t a = 1;
+                        uart_write_bytes(UART_NUM_1, (char*)&a, 1);
+                        uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(100));
+
+                        // parse little-endian signed pulses/sec
                         int32_t v = (int32_t)cmd[2]
                                   | ((int32_t)cmd[3] << 8)
                                   | ((int32_t)cmd[4] << 16)
                                   | ((int32_t)cmd[5] << 24);
-                        ESP_LOGI(TAG, "      -> desired_theta_velocity = %" PRId32, v);
+                        desired_theta_velocity = v;
+
                         if (v == 0) {
                             pid_enabled = false;
-                            ledc_set_duty(LEDC_LOW_SPEED_MODE, DC_PWM_CHANNEL, 0);
-                            ledc_update_duty(LEDC_LOW_SPEED_MODE, DC_PWM_CHANNEL);
+                            dc_apply_pwm_and_dir(0, /*forward=*/1);
                         } else {
-                            desired_theta_velocity = v;
                             pid_enabled = true;
                         }
+                    } else if (cmd[1] == THETA_VEL_GET) {
+                        // respond with measured pulses/sec (int32)
+                        uart_write_bytes(UART_NUM_1, (char*)&measured_theta_velocity, sizeof(measured_theta_velocity));
+                        uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(100));
                     }
                     break;
+
                 case CMD_THETA_ZERO:
-                    ESP_LOGI(TAG, "  -> CMD_THETA_ZERO, subcmd=0x%02X", cmd[1]);
                     if (cmd[1] == THETA_ZERO_START) {
-                        pid_integral   = pid_prev_error = pid_last_pwm = 0;
-                        desired_theta_velocity = 40904; // 10 rpm
+                        // Kick into ~10 rpm using the helper
+                        pid_integral   = 0.0;
+                        pid_prev_error = 0.0;
+                        pid_last_pwm   = 0;
+                        desired_theta_velocity = RPM_TO_PPS(10.0);
                         pid_enabled = true;
                         xTaskNotify(thetaZeroTaskHandle, NOTIF_FALL_BIT, eSetBits);
                     } else if (cmd[1] == THETA_ZERO_STATUS) {
@@ -501,8 +535,9 @@ static void uart_slave_task(void *arg)
                         uart_wait_tx_done(UART_NUM_1, pdMS_TO_TICKS(100));
                     }
                     break;
+
                 default:
-                    ESP_LOGW(TAG, "  -> Unknown command 0x%02X", cmd[0]);
+                    ESP_LOGW(TAG, "Unknown command 0x%02X", cmd[0]);
                     break;
             }
         }
@@ -510,17 +545,18 @@ static void uart_slave_task(void *arg)
     }
 }
 
-
 //------------------------------------------------------------------------------
-// Encoder‑Dump Task
+// Encoder-Dump Task (optional debug)
 //------------------------------------------------------------------------------
 static void encoder_dump_task(void *arg)
 {
     int32_t p[5];
     while (1) {
         update_encoder_positions(p);
-        ESP_LOGI(TAG, "Encoders: [%ld, %ld, %ld, %ld, %ld]",
-                 p[0],p[1],p[2],p[3],p[4]);
+        ESP_LOGI(TAG, "Enc:[%ld,%ld,%ld,%ld,%ld] meas=%" PRId32 "pps (%.3f rpm)",
+                 p[0],p[1],p[2],p[3],p[4],
+                 measured_theta_velocity,
+                 PPS_TO_RPM(measured_theta_velocity));
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -539,5 +575,5 @@ void app_main(void)
     xTaskCreate(uart_slave_task,     "uart_slave",    4096, NULL,  9, NULL);
     xTaskCreate(theta_zeroing_task,  "theta_zero",    2048, NULL,  9, &thetaZeroTaskHandle);
     xTaskCreate(theta_velocity_task, "theta_velocity",2048, NULL, 10, NULL);
-    //xTaskCreate(encoder_dump_task,   "encoder_dump",  2048, NULL,  5, NULL);
+    // xTaskCreate(encoder_dump_task,   "encoder_dump",  2048, NULL,  5, NULL);
 }
