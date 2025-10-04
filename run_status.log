@@ -18,3 +18,13 @@
 [2025-10-04 15:33:01] Saved C:\Users\teamw\OneDrive\Desktop\HeliCAL\helicalsoftware\outputs\angle_montage.png
 [2025-10-04 15:33:01] Saved C:\Users\teamw\OneDrive\Desktop\HeliCAL\helicalsoftware\outputs\toy_exposure.gcode
 [2025-10-04 15:33:01] === Run done in 2.1s ===
+[2025-10-04 16:10:14] Saved config_heliCAL.json
+[2025-10-04 16:10:14] [DEMO] Using packaged resource: ring.stl
+[2025-10-04 16:10:14] === Run start: STL='C:\Users\teamw\.conda\envs\vam_env\lib\site-packages\vamtoolbox\staticresources\ring.stl' (demo=True) ===
+[2025-10-04 16:10:14] Voxelizing STL: C:\Users\teamw\.conda\envs\vam_env\lib\site-packages\vamtoolbox\staticresources\ring.stl @ resolution=96
+[2025-10-04 16:10:15] Using Projector3DParallelAstra backend.
+[2025-10-04 16:10:16] Saved C:\Users\teamw\OneDrive\Desktop\HeliCAL\helicalsoftware\outputs\sinogram_view.png
+[2025-10-04 16:10:16] Saved C:\Users\teamw\OneDrive\Desktop\HeliCAL\helicalsoftware\outputs\reconstruction_slice.png
+[2025-10-04 16:10:16] Saved C:\Users\teamw\OneDrive\Desktop\HeliCAL\helicalsoftware\outputs\angle_montage.png
+[2025-10-04 16:10:16] Saved C:\Users\teamw\OneDrive\Desktop\HeliCAL\helicalsoftware\outputs\toy_exposure.gcode
+[2025-10-04 16:10:16] === Run done in 1.9s ===

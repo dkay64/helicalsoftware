@@ -2,35 +2,34 @@
 gui_test.py
 
 Purpose:
-  * Work backwards from OUTPUTS (images + G-code) without needing lab hardware.
-  * Flexible: takes ANY .stl when available, OR falls back to built-in demo assets via vamtoolbox.resources.
+  * Work backwards from OUTPUTS (images + G-code) without lab hardware.
+  * Flexible: accepts ANY .stl when available, OR falls back to built-in demo assets via vamtoolbox.resources.
   * Outputs:
       - Projection images (PNGs)
       - Toy G-code from a thresholded reconstruction slice
       - Status log + editable JSON config
-  * Minimal GUI with "Demo Mode" toggle to guarantee a successful run off-lab.
+  * "Demo Mode" toggle guarantees a successful off-lab run.
 
 Changes vs previous:
-  - Added DEMO MODE (uses packaged demo STL, e.g., 'ring.stl', even if user path is missing)
+  - Added DEMO MODE (uses packaged demo STL, e.g., 'ring.stl', if user path is missing)
   - Graceful file checks with helpful error messages
   - Auto-tries vam.resources.load(<basename>) when a path is missing
-  - Saves an angle sweep montage PNG for impressiveness
+  - Saves an angle-sweep montage PNG
 
 Dependencies:
-  - numpy, matplotlib, tkinter
+  - numpy, matplotlib
   - vamtoolbox (ASTRA if available)
 
 Run:
   python gui_test.py
 """
 
+
 import sys
 import os
-import json
 import time
-import threading
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTextEdit, QFileDialog, QCheckBox, QMessageBox,
@@ -67,10 +66,48 @@ def _save_cfg(cfg: dict):
         pipeline.save_config(cfg)
 
 
+class PipelineWorker(QObject):
+    log = pyqtSignal(str)
+    done = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, stl, out_dir, cfg, demo_mode):
+        super().__init__()
+        self.stl = stl
+        self.out_dir = out_dir
+        self.cfg = cfg
+        self.demo_mode = demo_mode
+
+    def _emit_log(self, msg):
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.log.emit(f"[{ts}] {msg}")
+
+    def run(self):
+        if not PIPELINE_OK:
+            self.failed.emit("Pipeline helpers not available (gui_test.py import failed).")
+            return
+        try:
+            resolved = pipeline.resolve_stl_path(self.stl if self.stl else None, self.demo_mode)
+            self._emit_log(f"=== Run start: STL='{resolved}' (demo={self.demo_mode}) ===")
+            tg = pipeline.voxelize_stl(resolved, self.cfg["resolution"])
+            recon_array, sino, recon = pipeline.run_projection(tg, self.cfg["num_angles"], ray_type=self.cfg.get("ray_type", "parallel"))
+            spath, rpath = pipeline.save_projection_images(self.out_dir, sino, recon_array)
+            pipeline.save_angle_montage(self.out_dir, sino, n_cols=10)
+            gpath = pipeline.write_gcode_from_recon_slice(self.out_dir, recon_array, self.cfg)
+            self._emit_log(f"Saved {spath}")
+            self._emit_log(f"Saved {rpath}")
+            self._emit_log(f"Saved {os.path.join(self.out_dir, 'angle_montage.png')}")
+            self._emit_log(f"Saved {gpath}")
+            self._emit_log("=== Run done ===")
+            self.done.emit(self.out_dir)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class HeliCALQt(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HeliCAL Control Center")
+        self.setWindowTitle("HeliCAL Control Center (PyQt5)")
         self.resize(980, 720)
 
         self.serial = None
@@ -91,6 +128,9 @@ class HeliCALQt(QMainWindow):
         self.enc_timer = QTimer(self)
         self.enc_timer.setInterval(500)
         self.enc_timer.timeout.connect(self._poll_encoder)
+
+        self._thread = None
+        self._worker = None
 
     def _build_tab_pipeline(self):
         tab = QWidget()
@@ -163,8 +203,7 @@ class HeliCALQt(QMainWindow):
         self.tabs.addTab(tab, "Pipeline")
 
     def _append_log(self, msg: str):
-        ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        self.txt_log.append(f"[{ts}] {msg}")
+        self.txt_log.append(msg)
 
     def _browse_stl(self):
         path, _ = QFileDialog.getOpenFileName(self, "Choose STL", "", "STL files (*.stl);;All files (*.*)")
@@ -204,26 +243,30 @@ class HeliCALQt(QMainWindow):
         cfg = self._cfg_from_ui()
         _save_cfg(cfg)
 
-        def worker():
+        if getattr(self, "_thread", None):
             try:
-                resolved = pipeline.resolve_stl_path(stl if stl else None, self.cb_demo.isChecked())
-                self._append_log(f"=== Run start: STL='{resolved}' (demo={self.cb_demo.isChecked()}) ===")
-                tg = pipeline.voxelize_stl(resolved, cfg["resolution"])
-                recon_array, sino, recon = pipeline.run_projection(tg, cfg["num_angles"], ray_type=cfg.get("ray_type", "parallel"))
-                spath, rpath = pipeline.save_projection_images(out_dir, sino, recon_array)
-                pipeline.save_angle_montage(out_dir, sino, n_cols=10)
-                gpath = pipeline.write_gcode_from_recon_slice(out_dir, recon_array, cfg)
-                self._append_log(f"Saved {spath}")
-                self._append_log(f"Saved {rpath}")
-                self._append_log(f"Saved {os.path.join(out_dir, 'angle_montage.png')}")
-                self._append_log(f"Saved {gpath}")
-                self._append_log(f"=== Run done ===")
-                QMessageBox.information(self, "Done", f"Outputs saved to:\\n{out_dir}")
-            except Exception as e:
-                self._append_log(f"[ERROR] Pipeline failed: {e}")
-                QMessageBox.critical(self, "Pipeline Error", str(e))
+                self._thread.quit()
+                self._thread.wait(100)
+            except Exception:
+                pass
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._thread = QThread()
+        self._worker = PipelineWorker(stl, out_dir, cfg, self.cb_demo.isChecked())
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.log.connect(self._append_log)
+        self._worker.done.connect(self._on_pipeline_done)
+        self._worker.failed.connect(self._on_pipeline_failed)
+        self._worker.done.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.start()
+
+    def _on_pipeline_done(self, out_dir: str):
+        QMessageBox.information(self, "Done", f"Outputs saved to:\n{out_dir}")
+
+    def _on_pipeline_failed(self, err: str):
+        QMessageBox.critical(self, "Pipeline Error", err)
 
     def _build_tab_dc_encoder(self):
         tab = QWidget()
@@ -349,12 +392,12 @@ class HeliCALQt(QMainWindow):
         v = QVBoxLayout(tab)
 
         info = QLabel(
-            "Basic stepper controls (placeholders). Align command bytes with firmware.\\n"
-            "Suggested protocol (example):\\n"
-            "  0x50 axis enable  : [0x50, axis_id, 1|0, 0, 0, 0]\\n"
-            "  0x51 jog steps    : [0x51, axis_id, <int32 steps>]\\n"
-            "  0x52 set position : [0x52, axis_id, <int32 steps>]\\n"
-            "  0x53 set speed    : [0x53, axis_id, <int32 steps_per_s>]\\n"
+            "Basic stepper controls (placeholders). Align command bytes with firmware.\n"
+            "Suggested protocol (example):\n"
+            "  0x50 axis enable  : [0x50, axis_id, 1|0, 0, 0, 0]\n"
+            "  0x51 jog steps    : [0x51, axis_id, <int32 steps>]\n"
+            "  0x52 set position : [0x52, axis_id, <int32 steps>]\n"
+            "  0x53 set speed    : [0x53, axis_id, <int32 steps_per_s>]\n"
         )
         info.setWordWrap(True)
         v.addWidget(info)
