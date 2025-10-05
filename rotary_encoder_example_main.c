@@ -368,11 +368,15 @@ static void theta_zeroing_task(void *arg)
 //------------------------------------------------------------------------------
 // Theta Velocity Task (PID, 0x30) - signed control with DIR
 //------------------------------------------------------------------------------
+<<<<<<< Updated upstream
 static volatile int32_t desired_theta_velocity = 0; // pulses/sec (signed)
 static volatile bool    pid_enabled           = false;
+=======
+>>>>>>> Stashed changes
 
-static void theta_velocity_task(void *arg)
+void IRAM_ATTR dc_pid_cb(void *arg)
 {
+<<<<<<< Updated upstream
     int prev_enc = 0, cur_enc = 0;
     const double dt = 0.02; // 50 Hz
     // Start with conservative gains; tune as needed
@@ -438,8 +442,72 @@ static void theta_velocity_task(void *arg)
             PPS_TO_RPM(measured_theta_velocity),
             err, pid_last_pwm, dir_forward);
         */
+=======
+
+
+    if (!pid_enabled) {
+        // keep encoder baseline up‑to‑date
+        ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_units[2], &cur_enc));
+        prev_enc = cur_enc + total_counts[2];
+        continue;
+>>>>>>> Stashed changes
     }
+
+    // 1) read encoder
+    ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_units[2], &cur_enc));
+    cur_enc += total_counts[2];
+
+    // 2) compute measured velocity (pulses/sec)
+    int32_t delta = cur_enc - prev_enc;
+    double measured = delta / dt;
+
+    // 3) PID math
+    double err   = (double)desired_theta_velocity - measured;
+    pid_integral += err * dt;
+    double deriv = (err - pid_prev_error) / dt;
+    pid_prev_error = err;
+    prev_enc = cur_enc;
+
+    double P = kp * err;
+    double I = ki * pid_integral;
+    double D = kd * deriv;
+    double out = P + I + D;
+
+    // 4) saturate & slew‐rate limit
+    out = fmin(fmax(out, 0.0), 255.0);
+    {
+        int step = (int)out - pid_last_pwm;
+        const int max_step = 5;
+        if      (step >  max_step) out = pid_last_pwm + max_step;
+        else if (step < -max_step) out = pid_last_pwm - max_step;
+    }
+    pid_last_pwm = (int)out;
+
+    // 5) apply PWM
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, DC_PWM_CHANNEL, pid_last_pwm);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, DC_PWM_CHANNEL);
+
+    // 6) log using the correct locals
+    /*
+    ESP_LOGI(TAG,
+        "Velocity Task: Desired %" PRId32
+        ", Meas %.2f"
+        ", Err %.2f (%.2f PWM)"
+        ", I %.2f (%.2f PWM)"
+        ", D %.2f (%.2f PWM)"
+        ", PWM %d",
+        desired_theta_velocity,
+        measured,
+        err,        P,
+        pid_integral, I,
+        deriv,      D,
+        pid_last_pwm
+    );
+    */
+    
 }
+
+
 
 //------------------------------------------------------------------------------
 // UART Slave Task
@@ -562,6 +630,28 @@ static void encoder_dump_task(void *arg)
 }
 
 //------------------------------------------------------------------------------
+// Initializes PID 
+//------------------------------------------------------------------------------
+static void init_pid(void *arg) {
+
+    static volatile int32_t desired_theta_velocity = 0;
+    static volatile bool    pid_enabled           = false;
+    int prev_enc = 0, cur_enc = 0;
+    const double dt = 0.02;
+    const double kp = 0.06, ki = 0.005, kd = 0.0;
+
+    ESP_ERROR_CHECK(pcnt_unit_get_count(pcnt_units[2], &prev_enc));
+    prev_enc += total_counts[2];
+
+    esp_timer_create_args_t t = {
+        .callback = dc_pid_cb,
+        .name = "pid"
+    };
+    esp_timer_create(&t, &pid_timer);
+    esp_timer_start_periodic(pid_timer, 20*1000); // Every 20 ms, dc_pid_cb runs
+}
+
+//------------------------------------------------------------------------------
 // app_main
 //------------------------------------------------------------------------------
 void app_main(void)
@@ -571,8 +661,12 @@ void app_main(void)
     init_dc_driver();
     init_encoders();
     init_bb_interrupt();
+    init_pid();
 
+    // Core Tasks
     xTaskCreate(uart_slave_task,     "uart_slave",    4096, NULL,  9, NULL);
+
+    // Custom Commands
     xTaskCreate(theta_zeroing_task,  "theta_zero",    2048, NULL,  9, &thetaZeroTaskHandle);
     xTaskCreate(theta_velocity_task, "theta_velocity",2048, NULL, 10, NULL);
     // xTaskCreate(encoder_dump_task,   "encoder_dump",  2048, NULL,  5, NULL);
