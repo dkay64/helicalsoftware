@@ -7,6 +7,14 @@
 #include <stdexcept>
 #include <iostream>
 
+#include <cerrno>
+#include <cstring>
+#include <cstdio>
+#include <string>
+
+
+
+
 TicController::TicController(const char* i2c_device, uint8_t i2c_address)
 {
     this->i2c_address = i2c_address;
@@ -48,10 +56,10 @@ TicController::TicController(const char* i2c_device, uint8_t i2c_address,
     setMaxSpeed(max_velocity); //microsteps per 10,000s
     
     // Convert the desired current (in mA) to a 7-bit value.
-    // The range is 0 mA to 9095 mA mapped to 0–127.
-    // Each unit is ˜ 9095 / 127 ˜ 71.65 mA.
+    // The range is 0 mA to 9095 mA mapped to 0ï¿½127.
+    // Each unit is ï¿½ 9095 / 127 ï¿½ 71.65 mA.
     // For example, for 2000 mA:
-    //     (2000 / 9095.0) * 127 ˜ 27.89, so truncating gives 27.
+    //     (2000 / 9095.0) * 127 ï¿½ 27.89, so truncating gives 27.
     uint8_t current_value = static_cast<uint8_t>((max_current_mA / 9095.0) * 127);
     
     // Set the current limit using the converted 7-bit value.
@@ -67,18 +75,31 @@ void TicController::writeCommand(uint8_t command, int32_t value)
 {
     uint8_t buffer[5] = {
         command,
-        (uint8_t)(value >> 0  & 0xFF),
-        (uint8_t)(value >> 8  & 0xFF),
-        (uint8_t)(value >> 16 & 0xFF),
-        (uint8_t)(value >> 24 & 0xFF)
+        static_cast<uint8_t>((value >> 0)  & 0xFF),
+        static_cast<uint8_t>((value >> 8)  & 0xFF),
+        static_cast<uint8_t>((value >> 16) & 0xFF),
+        static_cast<uint8_t>((value >> 24) & 0xFF)
     };
 
-    struct i2c_msg message = { i2c_address, 0, sizeof(buffer), buffer };
+    uint16_t addr7 = static_cast<uint16_t>(i2c_address & 0x7F);
+
+    struct i2c_msg message = { addr7, 0, sizeof(buffer), buffer };
     struct i2c_rdwr_ioctl_data ioctl_data = { &message, 1 };
 
-    if (ioctl(file, I2C_RDWR, &ioctl_data) != 1)
+    int ret = ioctl(file, I2C_RDWR, &ioctl_data);
+    if (ret != 1)
     {
-        throw std::runtime_error("Failed to send I2C command");
+        int e = errno;
+        char msg[256];
+        std::snprintf(msg, sizeof(msg),
+            "[TicController:%s @0x%02X] Failed to send I2C command: "
+            "cmd=0x%02X value=0x%08X ret=%d errno=%d (%s)",
+            (name_.empty() ? "unnamed" : name_.c_str()),
+            addr7,
+            command,
+            static_cast<uint32_t>(value),
+            ret, e, std::strerror(e));
+        throw std::runtime_error(msg);
     }
 }
 
