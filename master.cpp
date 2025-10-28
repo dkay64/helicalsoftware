@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <unistd.h>
+#include <queue>
 
 using namespace std;
 
@@ -288,7 +289,7 @@ int main() {
     // ===== 4) Command loop =====
     cout << "G-code ready. Examples: `G0 R100 T100 Z100`, `G1 Z-200 FR120000`, `G33 A9`, `M114`, `M112`.\n";
     cout << "Comments with ';' are ignored. Ctrl-D to exit.\n";
-
+    
     string raw;
     while (true) {
         cout << "> " << flush;
@@ -357,6 +358,14 @@ int main() {
                         cout << "Note: R/T/Z use setMaxSpeed(feed) then setTargetPosition(...). A uses setThetaVelocity(pps).\n";
                         cout << "---------------------------\n";
                         break;
+                    }
+                    case 30: {//M30 : End program
+                        cout << "M30: Program complete. Exiting G-Code Mode.\n";
+                        motors_disable(); 
+                        dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
+                        led.stop();
+                        restore_terminal();
+                        return 0;
                     }
                     case 200: led.configure();led.current(450);dlp.configure(); cout << "M200: Projector ON (configured).\n"; break;
                     case 201: dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);led.stop(); cout << "M201: Projector OFF.\n"; break;
