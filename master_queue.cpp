@@ -1,4 +1,3 @@
-// master.cpp
 #include "Esp32UART.h"
 #include "TicController.h"
 #include "HeliCalHelper.h"    // zeroAxisPair(), init_key_listener(), abort_requested(), consume_enter(), restore_terminal()
@@ -18,6 +17,15 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <queue>
+
+// Sample commmand - for some reason z comm waits for us to press enter to be executed
+/* G91 
+ G0 R10000
+ G0 T10000
+ G1 T-10000 F50000000
+ G0 R20000
+ G1 Z-15000 F50000000
+*/
 
 using namespace std;
 
@@ -89,6 +97,12 @@ struct AxisGroup {
         if (c) c->exitSafeStart();
         if (d) d->exitSafeStart();
     }
+    void haltAndHold() const {
+		if (a) a->haltAndHold();
+		if (b) b->haltAndHold();
+		if (c) c->haltAndHold();
+		if (d) d->haltAndHold();
+	}
 };
 
 // Trim + strip comment after ';'
@@ -196,7 +210,8 @@ int main() {
         if (grp.d) { grp.d->clearDriverError(); grp.d->exitSafeStart(); grp.d->energize(); grp.d->resetCommandTimeout(); }
     };
 
-    // NEW: helper to push rapid caps before homing
+
+//rapid cap ceiling
     auto set_rapid_caps = [&](){
         AX_R.setMaxSpeed(STEPPER_RT_MAXVELOCITY);
         AX_T.setMaxSpeed(STEPPER_RT_MAXVELOCITY);
@@ -209,11 +224,12 @@ int main() {
 
         if (req < 0.0 || req > static_cast<double>(cap)) {
             cout << "[RANGE] Axis " << axis << " feed " << req
-                 << " is out of range [0, " << cap << "] — skipping.\n";
+                 << " is out of range [0, " << cap << "] ? skipping.\n";
             return false;
         }
         if (req == 0.0) {
-            cout << "[WARN] Axis " << axis << " feed is 0 — command will latch target but not move.\n";
+            cout << "[WARN] Axis " << axis << " feed is 0. skipping move.\n";
+            return false; // Do not proceed with a 0-speed move
         }
         grp.setMaxSpeed(static_cast<uint32_t>(req));
         return true;
@@ -402,17 +418,6 @@ int main() {
                     continue; // M-codes don't need to wait for motion
                 }
 
-                // ===== F word (feed rate) alone or FR/FT/FZ/FA pairs =====
-                if (head[0] == 'F' && (head.size()==1 || isdigit(head[1]) || head[1]=='-')) {
-                    double v = 0.0;
-                    try { v = stod(head.substr(1)); } catch(...) { v = 0.0; }
-                    F_global = v;                       // (kept behavior of your current file)
-                    F_axis['R'] = F_axis['T'] = F_axis['Z'] = F_global;
-                    cout << "F: Global feed requested " << v
-                         << " (each axis must be within its [0, max] when applied)\n";
-                    continue; // F-codes don't need to wait
-                }
-
                 // ===== G-codes =====
                 if (head[0] != 'G') {
                     cerr << "Unknown command head: " << head << "\n";
@@ -425,19 +430,29 @@ int main() {
                 vector<pair<char,double>> params;
                 string tok;
                 while (iss >> tok) {
-                    if (!tok.empty()) tok[0] = static_cast<char>(toupper(tok[0]));
-                    char k; double v;
-                    if (parse_param(tok, k, v)) {
-                        params.emplace_back(k, v);
-                    } else {
-                        if (tok.size()>=2 && toupper(tok[0])=='F' && isalpha(tok[1])) {
+                    if (tok.empty()) continue;
+                    tok[0] = static_cast<char>(toupper(tok[0]));
+                    if (tok[0] == 'F') {
+                        if ((tok.size() > 1) && (isdigit(tok[1]) || tok[1] == '-')) {
+                            // Case 1: Global F word (F100000)
+                            try {
+                                double v = stod(tok.substr(1));
+                                F_global = v;
+                                F_axis['R'] = F_axis['T'] = F_axis['Z'] = F_global;
+                                cout << "F: Global feed set to " << v << "\n";
+                            } catch (...) {
+                                cerr << "Ignoring invalid F token: " << tok << "\n";
+                            }
+                        } else if (tok.size() >= 2 && isalpha(tok[1])) {
+                            // Case 2: Per-axis F word (FR10000, FA9)
                             char ax = static_cast<char>(toupper(tok[1]));
                             double fv = 0.0;
                             try { fv = stod(tok.substr(2)); } catch(...) { fv = 0.0; }
+                            
                             if (ax == 'A') {
                                 if (fv < A_RPM_MIN || fv > A_RPM_MAX) {
                                     cout << "[RANGE] FA " << fv << " RPM not in ["
-                                         << A_RPM_MIN << ", " << A_RPM_MAX << "] — ignoring.\n";
+                                         << A_RPM_MIN << ", " << A_RPM_MAX << "] ? ignoring.\n";
                                 } else {
                                     F_axis['A'] = fv;
                                     cout << "FA: rotation feed set to " << fv << " RPM\n";
@@ -446,18 +461,26 @@ int main() {
                                 const uint32_t cap = axis_max_speed(ax);
                                 if (fv < 0.0 || fv > static_cast<double>(cap)) {
                                     cout << "[RANGE] F" << ax << " " << fv
-                                         << " not in [0, " << cap << "] — ignoring.\n";
+                                         << " not in [0, " << cap << "] ? ignoring.\n";
                                 } else {
                                     F_axis[ax] = fv;
                                     cout << "F" << ax << ": feed set to " << fv << "\n";
                                 }
                             }
                         } else {
-                            cerr << "Ignoring token: " << tok << "\n";
+                             cerr << "Ignoring malformed F token: " << tok << "\n";
                         }
+                        continue; // F-words are not G-code params, so skip to next token
+                    }
+
+                    // --- Default parameter parsing (R, T, Z, etc.) ---
+                    char k; double v;
+                    if (parse_param(tok, k, v)) {
+                        params.emplace_back(k, v);
+                    } else {
+                        cerr << "Ignoring token: " << tok << "\n";
                     }
                 }
-
                 switch (gnum) {
                     case 0: { // G0 rapid at axis caps
                         bool hasR=false, hasT=false, hasZ=false;
@@ -552,7 +575,7 @@ int main() {
                         if (target_rpm < A_RPM_MIN || target_rpm > A_RPM_MAX) {
                             cout << "[RANGE] A feed " << target_rpm << " RPM not in ["
                                 << A_RPM_MIN << ", " << A_RPM_MAX
-                                << "] — cannot wait, value invalid.\n";
+                                << "] ? cannot wait, value invalid.\n";
                         } else {
                             cout << "G5: wait for A steady-state (" << target_rpm << " rpm)\n";
                             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
@@ -565,7 +588,7 @@ int main() {
                         break;
                     }
 
-                    case 28: { // G28 homing — ensure max speeds before homing
+                    case 28: { // G28 homing ? ensure max speeds before homing
                         cout << "G28: homing R/T/Z\n";
                         // Force caps so homing is never limited by prior G1 feeds
                         AX_R.setMaxSpeed(axis_max_speed('R'));
@@ -583,7 +606,7 @@ int main() {
                         if (rpm < A_RPM_MIN || rpm > A_RPM_MAX) {
                             cout << "[RANGE] G33 A " << rpm << " RPM not in ["
                                 << A_RPM_MIN << ", " << A_RPM_MAX
-                                << "] — skipping.\n";
+                                << "] ? skipping.\n";
                         } else {
                             int32_t pps = rpm_to_pps(rpm);
                             uart.setThetaVelocity(pps);
@@ -623,8 +646,8 @@ int main() {
                 // to the next command instead if you prefer.
             }
 
+            bool wait_loop_error = false; // Add a flag
             try {
-                // Check controllers that are representative of the axes
                 while (tic_tw_r.getCurrentPosition() != tic_tw_r.getTargetPosition() ||
                        tic_tw_t.getCurrentPosition() != tic_tw_t.getTargetPosition() ||
                        tic_tw_z1.getCurrentPosition() != tic_tw_z1.getTargetPosition())
@@ -643,7 +666,19 @@ int main() {
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 }
             } catch (const std::exception& e) {
-                cerr << "!! ERROR during wait loop: " << e.what() << "\n";
+                cerr << "!! CRITICAL I2C ERROR during wait loop: " << e.what() << "\n";
+                cerr << "!! Halting motion and clearing queue for safety. !!\n";
+                AX_R.haltAndHold();
+                AX_T.haltAndHold();
+                AX_Z.haltAndHold();
+                wait_loop_error = true; // Set the flag
+            }
+
+            // If the error flag was set, nuke the queue and break
+            if (wait_loop_error) {
+                 std::queue<std::string> empty; // Nuke the queue
+                 std::swap(commandQueue, empty);
+                 break; // Break out of the 'while (!commandQueue.empty())' loop
             }
             
             cout << "--- Command complete ---" << endl;
