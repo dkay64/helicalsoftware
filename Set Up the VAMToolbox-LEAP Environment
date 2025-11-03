@@ -1,0 +1,36 @@
+1. Download Anaconda 
+
+https://www.anaconda.com/download
+
+2. Open Anaconda prompt and install all core dependencies
+
+conda env create -f environment_gpu.yml
+conda activate vamtoolbox-gpu
+
+3. Install Ubuntu (if not already installed)
+  
+Download and install Ubuntu (e.g., Ubuntu 22.04 LTS or later).
+https://ubuntu.com/tutorials/install-ubuntu-desktop#1-overview
+Make sure your system boots into Ubuntu, updates are applied (`sudo apt update && sudo apt upgrade -y`), and your GPU is physically installed and recognized.
+   
+4. Open Ubuntu and check the CUDA driver version of the system
+
+nvidia-smi
+
+5. Install PyTorch
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+6. Install TIGRE
+
+pip install git+https://github.com/CERN/TIGRE.git
+
+7. # If the package exists in the local repo
+pip install -e ./leapct
+
+# Or install from a Git repository (replace with actual URL)
+pip install git+https://github.com/your-lab/leapct.git
+
+8. Test the installation 
+
+python -c "import numpy, torch, cupy, imageio; print('Environment setup complete.')"
