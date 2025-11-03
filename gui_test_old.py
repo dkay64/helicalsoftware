@@ -37,10 +37,30 @@ from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 
-# VAMToolbox imports
+""" Fix for macOS Tkinter issues """
+if tk.TkVersion >= 8.6:
+    try:
+        tk._default_root = None
+        root = tk.Tk()
+        root.withdraw()
+    except Exception:
+        pass
+
+import trimesh
+import trimesh.viewer
+
+"""
+Temporary fix to keep old VTK/PyVista code working with new NumPy by aliasing removed types like np.bool to bool.
+"""
+if not hasattr(np, "bool"):
+    np.bool = bool
+
+
 import vamtoolbox as vam
 import vamtoolbox.projector as projector_module
 from vamtoolbox.geometry import TargetGeometry, ProjectionGeometry, Sinogram, Reconstruction
+from vamtoolbox.imagesequence import ImageConfig, ImageSeq
+import vamtoolbox.optimize
 
 # ---------------------------------- Config ---------------------------------- #
 DEFAULT_CONFIG = {
@@ -89,12 +109,6 @@ def save_config(cfg: dict):
         log(f"[ERROR] Failed to save config: {e}")
 
 # ------------------------------ Core Pipeline ------------------------------- #
-
-
-
-
-
-
 def _sino_preview_2d(sino_array: np.ndarray) -> np.ndarray:
     """
     Convert sinogram of shape:
@@ -138,11 +152,16 @@ def resolve_stl_path(user_path: str | None, demo_mode: bool) -> str:
     """
     Resolve an STL path for voxelization.
     Priority:
-      1) If demo_mode => try vam.resources.load('ring.stl'), fallback to other packaged meshes
-      2) If user_path exists => use it
+      1) If user_path exists => use it
+      2) If demo_mode => try vam.resources.load('ring.stl'), fallback to other packaged meshes
       3) If basename(user_path) is a known packaged mesh => use vam.resources.load(basename)
     """
-    # 1) Demo mode: guarantee a valid STL via packaged resource
+    # 1) User-provided full/relative path
+    if user_path and os.path.exists(user_path):
+        log(f"Using user-selected STL file: {user_path}")
+        return user_path
+
+    # 2) Demo mode: guarantee a valid STL via packaged resource
     if demo_mode:
         for name in ("ring.stl", "cube.stl", "trifurcatedvasculature.stl"):
             try:
@@ -374,22 +393,34 @@ def write_gcode_from_recon_slice(output_dir: str, recon_array: np.ndarray, cfg: 
 
 
 # ----------------------------------- GUI ------------------------------------ #
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("HeliCAL STL → Images → Toy G-code")
-        self.geometry("820x580")
+class App(tk.Frame):
+    def __init__(self, master=None):
+        # Create root window first if not provided
+        if master is None:
+            master = tk.Tk()
+        
+        super().__init__(master)
+        self.master = master
+        self.master.title("HeliCAL STL → Images → Toy G-code")
+        self.master.geometry("820x580")
+        # Handle window close button
+        self.master.protocol("WM_DELETE_WINDOW", self.quit_app)
+        self.pack(fill=tk.BOTH, expand=True)
+        
         self.cfg = load_config()
         self.stl_path = tk.StringVar(value="")
-        self.out_dir = tk.StringVar(value=str(pathlib.Path.cwd() / "outputs"))
+        self.out_dir = tk.StringVar(value="")
         self.demo_mode = tk.BooleanVar(value=True)  # default ON for remote demo
         self._build_ui()
 
     def _build_ui(self):
         pad = {"padx": 8, "pady": 6}
         row = 0
+        # STL File row
         tk.Label(self, text="STL File:").grid(row=row, column=0, sticky="e", **pad)
-        tk.Entry(self, textvariable=self.stl_path, width=60).grid(row=row, column=1, **pad)
+        self.stl_entry = tk.Entry(self, width=60)  # Create Entry without textvariable first
+        self.stl_entry.grid(row=row, column=1, **pad)
+        self.stl_entry.configure(textvariable=self.stl_path)  # Then configure textvariable
         tk.Button(self, text="Browse", command=self.pick_stl).grid(row=row, column=2, **pad)
 
         row += 1
@@ -398,7 +429,8 @@ class App(tk.Tk):
 
         row += 1
         tk.Label(self, text="Output Dir:").grid(row=row, column=0, sticky="e", **pad)
-        tk.Entry(self, textvariable=self.out_dir, width=60).grid(row=row, column=1, **pad)
+        self.outdir_entry = tk.Entry(self, width=60)
+        self.outdir_entry.grid(row=row, column=1, **pad)
         tk.Button(self, text="Browse", command=self.pick_outdir).grid(row=row, column=2, **pad)
 
         # Parameters
@@ -444,8 +476,12 @@ class App(tk.Tk):
 
         # Action buttons
         row += 1
-        tk.Button(self, text="Run Pipeline", command=self.run_pipeline).grid(row=row, column=1, sticky="w", **pad)
-        tk.Button(self, text="Save Config", command=self.save_cfg_clicked).grid(row=row, column=2, sticky="w", **pad)
+        button_frame = tk.Frame(self)
+        button_frame.grid(row=row, column=1, columnspan=2, sticky="w", **pad)
+        
+        tk.Button(button_frame, text="Run Pipeline", command=self.run_pipeline).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="Save Config", command=self.save_cfg_clicked).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="Quit", command=self.quit_app).pack(side=tk.LEFT, padx=5)
 
         # Status box
         row += 1
@@ -455,14 +491,51 @@ class App(tk.Tk):
         self.after(300, self._tail_log_periodic)
 
     def pick_stl(self):
-        path = filedialog.askopenfilename(title="Choose STL", filetypes=[("STL files", "*.stl"), ("All", "*.*")])
+        path = filedialog.askopenfilename(
+            parent=self.master,
+            title="Choose STL",
+            filetypes=[("STL files", "*.stl"), ("All", "*.*")]
+        )
         if path:
+            # Update both the StringVar and Entry widget
             self.stl_path.set(path)
+            self.stl_entry.delete(0, tk.END)
+            self.stl_entry.insert(0, path)
+            # Log the selection
+            log(f"Selected STL file: {path}")
+            # Update the GUI
+            self.master.lift()
+            self.master.focus_force()
+            self.stl_entry.focus_set()
+            # Force GUI update
+            self.update_idletasks()
+            log(f"Selected STL file: {path}")  # Log the selection
+            # Find and focus the entry widget
+            for widget in self.winfo_children():
+                if isinstance(widget, tk.Entry) and widget.cget("textvariable") == str(self.stl_path):
+                    widget.focus_set()
+                    break
 
     def pick_outdir(self):
-        d = filedialog.askdirectory(title="Choose output directory")
+        d = filedialog.askdirectory(
+            parent=self.master,
+            title="Choose output directory",
+            initialdir=os.path.expanduser("~")  # Start from home directory
+        )
         if d:
+            # Make sure the directory exists or create it
+            os.makedirs(d, exist_ok=True)
+            # Update both the Entry widget and internal variable
+            self.outdir_entry.delete(0, tk.END)
+            self.outdir_entry.insert(0, d)
             self.out_dir.set(d)
+            # Log and update GUI
+            log(f"Selected output directory: {d}")
+            self.master.lift()
+            self.master.focus_force()
+            self.outdir_entry.focus_set()
+            # Force GUI update
+            self.update_idletasks()
 
     def save_cfg_clicked(self):
         self._refresh_cfg_from_ui()
@@ -490,9 +563,25 @@ class App(tk.Tk):
             pass
         self.after(600, self._tail_log_periodic)
 
+    def quit_app(self):
+        """Clean up and close the application"""
+        try:
+            # Save the current configuration
+            self._refresh_cfg_from_ui()
+            save_config(self.cfg)
+            log("Application closed normally.")
+        except Exception as e:
+            log(f"Error during shutdown: {e}")
+        finally:
+            # Destroy the main window and exit
+            self.master.quit()
+            self.master.destroy()
+            import sys
+            sys.exit(0)
+
     def run_pipeline(self):
         stl = self.stl_path.get().strip()
-        out_dir = self.out_dir.get().strip()
+        out_dir = self.outdir_entry.get().strip()
         os.makedirs(out_dir, exist_ok=True)
 
         self._refresh_cfg_from_ui()
@@ -500,15 +589,52 @@ class App(tk.Tk):
 
         try:
             start = time.time()
+            # Get current demo mode state from checkbox
+            is_demo = self.demo_mode.get()
+            # Only use demo mode if explicitly checked OR no file selected
+            use_demo = is_demo if stl else True
             # Resolve STL (demo or real)
-            resolved = resolve_stl_path(stl if stl else None, self.demo_mode.get())
-            log(f"=== Run start: STL='{resolved}' (demo={self.demo_mode.get()}) ===")
+            resolved = resolve_stl_path(stl if stl else None, use_demo)
+            log(f"=== Run start: STL='{resolved}' (demo={use_demo}) ===")
 
             tg = voxelize_stl(resolved, self.cfg["resolution"])
             recon_array, sino, recon = run_projection(tg, self.cfg["num_angles"], ray_type=self.cfg.get("ray_type", "parallel"))
             spath, rpath = save_projection_images(out_dir, sino, recon_array)
             save_angle_montage(out_dir, sino, n_cols=10)
             gpath = write_gcode_from_recon_slice(out_dir, recon_array, self.cfg)
+            # Generate video preview (optional but useful)
+            try:
+
+                log("Starting video generation...")
+
+                # Configure image sequence parameters
+                cfg = ImageConfig(
+                    (2560, 1600),            # Output resolution (width, height)
+                    intensity_scale=2,       # Brightness multiplier
+                    size_scale=1,            # Size scaling factor
+                    array_num=1,             # Number of repeated arrays
+                    array_offset=0,          # Spacing between arrays
+                    invert_v=False,          # Flip vertically or not
+                    v_offset=0,              # Vertical offset
+                    normalization_percentile=99.9,
+                )
+
+                # Convert sinogram into a sequence of projection images
+                imgset = ImageSeq(cfg, sinogram=sino)
+                video_path = os.path.join(out_dir, "reconstruction_preview.mp4")
+
+                # Save as MP4 video
+                imgset.saveAsVideo(
+                    save_path=video_path,
+                    rot_vel=36,      # Rotation speed (degrees per second)
+                    num_loops=5,     # Number of full rotations
+                    preview=False    # Disable GUI preview window
+                )
+                log(f"Saved video: {video_path}")
+
+            except Exception as ve:
+                log(f"[WARN] Video generation failed: {ve}")
+            
             elapsed = time.time() - start
             log(f"=== Run done in {elapsed:.1f}s ===")
             messagebox.showinfo("Done", f"Saved:\n{spath}\n{rpath}\n{os.path.join(out_dir, 'angle_montage.png')}\n{gpath}")
@@ -516,13 +642,19 @@ class App(tk.Tk):
             log(f"[ERROR] {fnf}")
             messagebox.showerror("File not found", str(fnf))
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
             log(f"[ERROR] Pipeline failed: {e}")
-            messagebox.showerror("Error", str(e))
+            log(tb)
+            messagebox.showerror("Error", f"{e}\nSee log for traceback.")
 
 
 if __name__ == "__main__":
     # touch log file to start
     with open(LOG_PATH, "a", encoding="utf-8") as _f:
         _f.write("")
-    app = App()
-    app.mainloop()
+    root = tk.Tk()
+    root.withdraw()  # Hide the root window initially
+    app = App(root)
+    root.deiconify()  # Show the window now that it's fully configured
+    root.mainloop()

@@ -38,3 +38,270 @@
 [2025-10-04 17:24:49] Saved C:\Users\teamw\OneDrive\Desktop\HeliCAL\helicalsoftware\outputs\angle_montage.png
 [2025-10-04 17:24:49] Saved C:\Users\teamw\OneDrive\Desktop\HeliCAL\helicalsoftware\outputs\toy_exposure.gcode
 [2025-10-04 17:24:49] === Run done in 2.3s ===
+[2025-11-02 22:02:48] Saved config_heliCAL.json
+[2025-11-02 22:02:50] Saved config_heliCAL.json
+[2025-11-02 22:02:50] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 22:02:50] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 22:02:50] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 22:02:50] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 22:03:46] Saved config_heliCAL.json
+[2025-11-02 22:03:46] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 22:03:46] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 22:03:46] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 22:03:46] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 22:21:03] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:27:37] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:27:44] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:28:46] Saved config_heliCAL.json
+[2025-11-02 22:28:46] Application closed normally.
+[2025-11-02 22:31:54] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:31:54] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:32:11] Saved config_heliCAL.json
+[2025-11-02 22:32:11] Application closed normally.
+[2025-11-02 22:33:25] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:33:25] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:35:39] Saved config_heliCAL.json
+[2025-11-02 22:35:39] Application closed normally.
+[2025-11-02 22:36:05] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:36:05] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:36:14] Output directory set to: /Users/wendylin/Desktop/Helical
+[2025-11-02 22:36:57] Saved config_heliCAL.json
+[2025-11-02 22:36:57] Application closed normally.
+[2025-11-02 22:39:55] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:39:55] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:40:02] Selected output directory: /Users/wendylin/Desktop/Helical
+[2025-11-02 22:40:31] Saved config_heliCAL.json
+[2025-11-02 22:40:35] Saved config_heliCAL.json
+[2025-11-02 22:40:35] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 22:40:35] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 22:40:35] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 22:40:35] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 22:40:38] Saved config_heliCAL.json
+[2025-11-02 22:40:38] Application closed normally.
+[2025-11-02 22:42:42] Saved config_heliCAL.json
+[2025-11-02 22:42:42] Application closed normally.
+[2025-11-02 22:51:10] Saved config_heliCAL.json
+[2025-11-02 22:51:10] Application closed normally.
+[2025-11-02 22:51:50] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:51:50] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 22:51:58] Selected output directory: /Users/wendylin/Desktop/Helical
+[2025-11-02 22:52:04] Saved config_heliCAL.json
+[2025-11-02 22:52:04] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 22:52:04] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 22:52:04] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 22:52:04] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 22:52:50] Saved config_heliCAL.json
+[2025-11-02 22:52:50] Application closed normally.
+[2025-11-02 23:00:59] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:00:59] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:01:07] Selected output directory: /Users/wendylin/Desktop/Helical
+[2025-11-02 23:01:09] Saved config_heliCAL.json
+[2025-11-02 23:01:09] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 23:01:09] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 23:01:09] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 23:01:09] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 23:03:29] Saved config_heliCAL.json
+[2025-11-02 23:03:29] Application closed normally.
+[2025-11-02 23:03:53] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:03:53] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:04:02] Selected output directory: /Users/wendylin/Desktop/Helical
+[2025-11-02 23:04:18] Saved config_heliCAL.json
+[2025-11-02 23:04:18] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 23:04:18] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 23:04:18] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 23:04:18] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 23:06:06] Saved config_heliCAL.json
+[2025-11-02 23:06:06] Application closed normally.
+[2025-11-02 23:06:23] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:06:23] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:06:29] Selected output directory: /Users/wendylin
+[2025-11-02 23:06:31] Saved config_heliCAL.json
+[2025-11-02 23:06:32] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 23:06:32] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 23:06:32] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 23:06:32] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 23:07:06] Saved config_heliCAL.json
+[2025-11-02 23:07:06] Application closed normally.
+[2025-11-02 23:12:43] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:12:43] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:12:47] Selected output directory: /Users/wendylin
+[2025-11-02 23:12:48] Saved config_heliCAL.json
+[2025-11-02 23:12:48] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 23:12:48] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 23:12:48] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 23:12:49] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 23:13:08] Saved config_heliCAL.json
+[2025-11-02 23:13:08] Application closed normally.
+[2025-11-02 23:20:22] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:20:22] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:20:31] Selected output directory: /Users/wendylin/Desktop/Helical
+[2025-11-02 23:20:33] Saved config_heliCAL.json
+[2025-11-02 23:20:33] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 23:20:33] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 23:20:33] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 23:20:33] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 23:21:03] Saved config_heliCAL.json
+[2025-11-02 23:21:03] Application closed normally.
+[2025-11-02 23:28:41] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:28:41] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:28:47] Selected output directory: /Users/wendylin
+[2025-11-02 23:28:48] Saved config_heliCAL.json
+[2025-11-02 23:28:48] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 23:28:48] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 23:28:48] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 23:28:48] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 23:29:48] Saved config_heliCAL.json
+[2025-11-02 23:29:48] Application closed normally.
+[2025-11-02 23:32:25] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:32:25] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:32:32] Selected output directory: /Users/wendylin
+[2025-11-02 23:32:35] Saved config_heliCAL.json
+[2025-11-02 23:32:35] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 23:32:35] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 23:32:35] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 23:32:36] [ERROR] Pipeline failed: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+[2025-11-02 23:32:36] Traceback (most recent call last):
+  File "/Users/wendylin/Desktop/Helical/helicalsoftware/gui_test_old.py", line 586, in run_pipeline
+  File "/Users/wendylin/Desktop/Helical/helicalsoftware/gui_test_old.py", line 185, in voxelize_stl
+  File "/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/geometry.py", line 531, in __init__
+    array, insert, zero_dose = vamtoolbox.voxelize.voxelizeTarget(
+  File "/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/voxelize.py", line 682, in voxelizeTarget
+    grid = pyvista.StructuredGrid(X, Y, Z)
+  File "/opt/anaconda3/envs/vamtoolbox310/lib/python3.10/site-packages/pyvista/core/pointset.py", line 2544, in __init__
+    self._from_arrays(uinput, y, z, **kwargs)
+  File "/opt/anaconda3/envs/vamtoolbox310/lib/python3.10/site-packages/pyvista/core/pointset.py", line 2607, in _from_arrays
+    self.SetPoints(vtk_points(points, force_float=force_float))
+  File "/opt/anaconda3/envs/vamtoolbox310/lib/python3.10/site-packages/pyvista/core/utilities/points.py", line 101, in vtk_points
+    vtk_arr = _vtk.numpy_to_vtk(points_, deep=deep)
+  File "/opt/anaconda3/envs/vamtoolbox310/lib/python3.10/site-packages/vtkmodules/util/numpy_support.py", line 164, in numpy_to_vtk
+    arr_dtype = get_numpy_array_type(vtk_typecode)
+  File "/opt/anaconda3/envs/vamtoolbox310/lib/python3.10/site-packages/vtkmodules/util/numpy_support.py", line 94, in get_numpy_array_type
+    return get_vtk_to_numpy_typemap()[vtk_array_type]
+  File "/opt/anaconda3/envs/vamtoolbox310/lib/python3.10/site-packages/vtkmodules/util/numpy_support.py", line 74, in get_vtk_to_numpy_typemap
+    _vtk_np = {vtkConstants.VTK_BIT:numpy.bool,
+  File "/opt/anaconda3/envs/vamtoolbox310/lib/python3.10/site-packages/numpy/__init__.py", line 324, in __getattr__
+    raise AttributeError(__former_attrs__[attr])
+AttributeError: module 'numpy' has no attribute 'bool'.
+`np.bool` was a deprecated alias for the builtin `bool`. To avoid this error in existing code, use `bool` by itself. Doing this will not modify any behavior and is safe. If you specifically wanted the numpy scalar type, use `np.bool_` here.
+The aliases was originally deprecated in NumPy 1.20; for more details and guidance see the original release note at:
+    https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations. Did you mean: 'bool_'?
+
+[2025-11-02 23:37:34] Saved config_heliCAL.json
+[2025-11-02 23:37:34] Application closed normally.
+[2025-11-02 23:38:28] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:38:28] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:38:32] Selected output directory: /Users/wendylin
+[2025-11-02 23:38:34] Saved config_heliCAL.json
+[2025-11-02 23:38:34] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 23:38:34] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 23:38:34] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 23:38:35] Using Projector3DParallelAstra backend.
+[2025-11-02 23:38:36] Saved /Users/wendylin/sinogram_view.png
+[2025-11-02 23:38:36] Saved /Users/wendylin/reconstruction_slice.png
+[2025-11-02 23:38:37] Saved /Users/wendylin/angle_montage.png
+[2025-11-02 23:38:37] Saved /Users/wendylin/toy_exposure.gcode
+[2025-11-02 23:38:37] === Run done in 2.9s ===
+[2025-11-02 23:41:08] Saved config_heliCAL.json
+[2025-11-02 23:41:08] Application closed normally.
+[2025-11-02 23:57:29] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:57:29] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-02 23:57:47] Selected output directory: /Users/wendylin/Desktop/Helical/models
+[2025-11-02 23:57:50] Saved config_heliCAL.json
+[2025-11-02 23:57:50] [DEMO] Using packaged resource: ring.stl
+[2025-11-02 23:57:50] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-02 23:57:50] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-02 23:57:51] Using Projector3DParallelAstra backend.
+[2025-11-02 23:57:51] Saved /Users/wendylin/Desktop/Helical/models/sinogram_view.png
+[2025-11-02 23:57:52] Saved /Users/wendylin/Desktop/Helical/models/reconstruction_slice.png
+[2025-11-02 23:57:52] Saved /Users/wendylin/Desktop/Helical/models/angle_montage.png
+[2025-11-02 23:57:52] Saved /Users/wendylin/Desktop/Helical/models/toy_exposure.gcode
+[2025-11-02 23:57:52] Starting video generation...
+[2025-11-02 23:58:04] Saved video: /Users/wendylin/Desktop/Helical/models/reconstruction_preview.mp4
+[2025-11-02 23:58:04] === Run done in 14.0s ===
+[2025-11-02 23:58:48] Saved config_heliCAL.json
+[2025-11-03 09:04:52] Saved config_heliCAL.json
+[2025-11-03 09:04:52] Application closed normally.
+[2025-11-03 09:30:01] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-03 09:30:01] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-03 09:30:20] Selected output directory: /Users/wendylin/Desktop/Helical/models/output
+[2025-11-03 09:30:27] Saved config_heliCAL.json
+[2025-11-03 09:30:27] [DEMO] Using packaged resource: ring.stl
+[2025-11-03 09:30:27] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-03 09:30:27] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-03 09:30:28] Using Projector3DParallelAstra backend.
+[2025-11-03 09:30:28] Saved /Users/wendylin/Desktop/Helical/models/output/sinogram_view.png
+[2025-11-03 09:30:28] Saved /Users/wendylin/Desktop/Helical/models/output/reconstruction_slice.png
+[2025-11-03 09:30:29] Saved /Users/wendylin/Desktop/Helical/models/output/angle_montage.png
+[2025-11-03 09:30:29] Saved /Users/wendylin/Desktop/Helical/models/output/toy_exposure.gcode
+[2025-11-03 09:30:29] Starting video generation...
+[2025-11-03 09:30:35] Saved video: /Users/wendylin/Desktop/Helical/models/output/reconstruction_preview.mp4
+[2025-11-03 09:30:35] === Run done in 8.7s ===
+[2025-11-03 09:34:31] Saved config_heliCAL.json
+[2025-11-03 09:34:31] Application closed normally.
+[2025-11-03 09:34:56] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-03 09:34:56] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-03 09:35:07] Selected output directory: /Users/wendylin/Desktop/Helical/models/output
+[2025-11-03 09:35:08] Saved config_heliCAL.json
+[2025-11-03 09:35:08] [DEMO] Using packaged resource: ring.stl
+[2025-11-03 09:35:08] === Run start: STL='/Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl' (demo=True) ===
+[2025-11-03 09:35:08] Voxelizing STL: /Users/wendylin/Desktop/Helical/VAMToolbox/vamtoolbox/staticresources/ring.stl @ resolution=96
+[2025-11-03 09:35:09] Using Projector3DParallelAstra backend.
+[2025-11-03 09:35:09] Saved /Users/wendylin/Desktop/Helical/models/output/sinogram_view.png
+[2025-11-03 09:35:09] Saved /Users/wendylin/Desktop/Helical/models/output/reconstruction_slice.png
+[2025-11-03 09:35:10] Saved /Users/wendylin/Desktop/Helical/models/output/angle_montage.png
+[2025-11-03 09:35:10] Saved /Users/wendylin/Desktop/Helical/models/output/toy_exposure.gcode
+[2025-11-03 09:35:10] Starting video generation...
+[2025-11-03 09:35:17] Saved video: /Users/wendylin/Desktop/Helical/models/output/reconstruction_preview.mp4
+[2025-11-03 09:35:17] === Run done in 8.8s ===
+[2025-11-03 09:42:53] Saved config_heliCAL.json
+[2025-11-03 09:42:53] Application closed normally.
+[2025-11-03 09:43:13] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-03 09:43:13] Selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-03 09:43:24] Selected output directory: /Users/wendylin/Desktop/Helical/models/output
+[2025-11-03 09:43:26] Saved config_heliCAL.json
+[2025-11-03 09:43:26] Using user-selected STL file: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl
+[2025-11-03 09:43:26] === Run start: STL='/Users/wendylin/Desktop/Helical/models/thinker/thinker.stl' (demo=True) ===
+[2025-11-03 09:43:26] Voxelizing STL: /Users/wendylin/Desktop/Helical/models/thinker/thinker.stl @ resolution=96
+[2025-11-03 09:43:30] Using Projector3DParallelAstra backend.
+[2025-11-03 09:43:31] Saved /Users/wendylin/Desktop/Helical/models/output/sinogram_view.png
+[2025-11-03 09:43:31] Saved /Users/wendylin/Desktop/Helical/models/output/reconstruction_slice.png
+[2025-11-03 09:43:31] Saved /Users/wendylin/Desktop/Helical/models/output/angle_montage.png
+[2025-11-03 09:43:31] Saved /Users/wendylin/Desktop/Helical/models/output/toy_exposure.gcode
+[2025-11-03 09:43:31] Starting video generation...
+[2025-11-03 09:43:38] Saved video: /Users/wendylin/Desktop/Helical/models/output/reconstruction_preview.mp4
+[2025-11-03 09:43:38] === Run done in 12.0s ===
+[2025-11-03 09:46:42] Saved config_heliCAL.json
+[2025-11-03 09:46:42] Application closed normally.
