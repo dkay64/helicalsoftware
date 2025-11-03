@@ -1,0 +1,61 @@
+name: vamtoolbox-gpu
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Core environment
+  - python=3.10
+  - setuptools
+  - cmake
+  - tk=8.6.12
+
+  # GPU compute libraries
+  - cudatoolkit=11.8        # NVIDIA CUDA runtime
+  - pytorch>=2.1            # GPU version (automatically linked with CUDA)
+  - torchvision             # image utilities for PyTorch
+  - torchaudio              # optional for signal/video handling
+
+  # Numerical & image processing
+  - numpy
+  - scipy
+  - numba
+  - scikit-image
+  - astra-toolbox
+  - pyfftw
+  - opencv
+  - imageio
+  - pillow
+  - ffmpeg-python
+  - tqdm
+  - dill
+  - colorama
+  - docutils
+
+  # Visualization & GUI
+  - matplotlib
+  - pyvista
+  - vedo
+  - pyglet
+  - pyopengl
+  - pyqt
+  - napari
+  - trimesh
+  - sphinx_rtd_theme
+  - ipykernel
+  - ipython
+
+  # Build & extension interface
+  - pybind11
+  - psutil
+  - loguru
+
+  # Optional hardware / serial interface
+  - pyserial
+
+  # (optional) extra GPU scientific libraries
+  - cupy                   # GPU-based NumPy (optional)
+  - nvidia-cudnn-cu11      # cuDNN for deep learning ops
+  - nvidia-cublas-cu11     # BLAS acceleration
