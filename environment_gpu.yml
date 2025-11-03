@@ -57,5 +57,7 @@ dependencies:
 
   # (optional) extra GPU scientific libraries
   - cupy                   # GPU-based NumPy (optional)
-  - nvidia-cudnn-cu11      # cuDNN for deep learning ops
-  - nvidia-cublas-cu11     # BLAS acceleration
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=11.8
