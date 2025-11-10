@@ -36,9 +36,22 @@ from PyQt5.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout, QComboBox
 )
 import serial
+import vamtoolbox as vam
+from vamtoolbox.geometry import TargetGeometry, ProjectionGeometry, Sinogram, Reconstruction
+import vamtoolbox.projector as projector_module
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Compatibility for older code that uses np.bool
+np.bool = bool
 
 PIPELINE_OK = True
 try:
+    import pipeline_helpers as pipeline
+except Exception as e:
+    pipeline = None
+    PIPELINE_OK = False
+    PIPELINE_IMPORT_ERR = str(e)
     import gui_test as pipeline
 except Exception as e:
     pipeline = None
@@ -94,10 +107,16 @@ class PipelineWorker(QObject):
             spath, rpath = pipeline.save_projection_images(self.out_dir, sino, recon_array)
             pipeline.save_angle_montage(self.out_dir, sino, n_cols=10)
             gpath = pipeline.write_gcode_from_recon_slice(self.out_dir, recon_array, self.cfg)
+            
+            # Generate video preview
+            vpath = pipeline.save_reconstruction_video(self.out_dir, sino)
+            
             self._emit_log(f"Saved {spath}")
             self._emit_log(f"Saved {rpath}")
             self._emit_log(f"Saved {os.path.join(self.out_dir, 'angle_montage.png')}")
             self._emit_log(f"Saved {gpath}")
+            if vpath:
+                self._emit_log(f"Saved {vpath}")
             self._emit_log("=== Run done ===")
             self.done.emit(self.out_dir)
         except Exception as e:
