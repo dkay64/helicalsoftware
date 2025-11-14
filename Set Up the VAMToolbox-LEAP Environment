@@ -10,7 +10,7 @@ conda activate vamtoolbox-gpu
 3. Install Ubuntu (if not already installed)
   
 Download and install Ubuntu (e.g., Ubuntu 22.04 LTS or later).
-https://ubuntu.com/tutorials/install-ubuntu-desktop#1-overview
+https://ubuntu.com/download/desktop
 Make sure your system boots into Ubuntu, updates are applied (`sudo apt update && sudo apt upgrade -y`), and your GPU is physically installed and recognized.
    
 4. Open Ubuntu and check the CUDA driver version of the system
@@ -23,13 +23,21 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 6. Install TIGRE
 
-pip install git+https://github.com/CERN/TIGRE.git
+conda install ccpi::tigre
+
+7. Install CMAKE 3.24.3
+
+pip install cmake==3.24.3
+
+check version:
+
+cmake --version
 
 7. # If the package exists in the local repo
 pip install -e ./leapct
 
-# Or install from a Git repository (replace with actual URL)
-pip install git+https://github.com/your-lab/leapct.git
+# Or install from a Git repository
+pip install git+https://github.com/LLNL/LEAP.git
 
 8. Test the installation 
 
