@@ -34,7 +34,7 @@ check version:
 cmake --version
 
 7. # If the package exists in the local repo
-pip install -e ./leapct
+pip install -e ./LEAP
 
 # Or install from a Git repository
 pip install git+https://github.com/LLNL/LEAP.git

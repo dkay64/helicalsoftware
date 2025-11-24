@@ -28,12 +28,14 @@ Run:
 import sys
 import os
 import time
+import socket
+from queue import Queue, Empty
 
-from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread, QEvent, pyqtSlot
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTextEdit, QFileDialog, QCheckBox, QMessageBox,
-    QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout, QComboBox
+    QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout, QComboBox, QDialog, QGridLayout
 )
 import serial
 import vamtoolbox as vam
@@ -58,6 +60,11 @@ except Exception as e:
     PIPELINE_OK = False
     PIPELINE_IMPORT_ERR = str(e)
 
+try:
+    import paramiko
+except ImportError:
+    paramiko = None
+
 
 def _default_cfg():
     if pipeline and hasattr(pipeline, "load_config"):
@@ -77,6 +84,222 @@ def _default_cfg():
 def _save_cfg(cfg: dict):
     if pipeline and hasattr(pipeline, "save_config"):
         pipeline.save_config(cfg)
+
+
+class PasswordDialog(QDialog):
+    def __init__(self, parent, user, host):
+        super().__init__(parent)
+        self.setWindowTitle("Remote Login Required")
+        self._password = ""
+        self.setModal(True)
+        self.setMinimumWidth(360)
+
+        label = QLabel(f"Enter password for system: {user}@{host}")
+        self.le_password = QLineEdit()
+        self.le_password.setEchoMode(QLineEdit.Password)
+        self.le_password.installEventFilter(self)
+
+        self.btn_enter = QPushButton("Enter")
+        self.btn_enter.setAutoDefault(False)
+        self.btn_enter.setDefault(False)
+        self.btn_enter.clicked.connect(self._on_submit)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(label)
+        layout.addWidget(self.le_password)
+        layout.addWidget(self.btn_enter)
+
+    def eventFilter(self, obj, event):
+        if obj is self.le_password and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                return True
+        return super().eventFilter(obj, event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
+    def _on_submit(self):
+        self._password = self.le_password.text()
+        self.accept()
+
+    def password(self):
+        return self._password
+
+
+class SSHCommandWorker(QObject):
+    log = pyqtSignal(str)
+    success = pyqtSignal()
+    failed = pyqtSignal(str)
+    auth_failed = pyqtSignal()
+    connection_lost = pyqtSignal(str)
+
+    def __init__(self, host, user, password, remote_dir):
+        super().__init__()
+        self.host = host
+        self.user = user
+        self.password = password
+        self.remote_dir = remote_dir
+        self.port = 22
+        self.compile_cmd = (
+            "g++ -std=c++17 -Wall -Wextra -pthread master_queue.cpp "
+            "Esp32UART.cpp TicController.cpp HeliCalHelper.cpp LED.cpp "
+            "DLPC900.cpp window_manager.cpp -I/usr/include/hidapi "
+            "-lhidapi-hidraw -o master_queue"
+        )
+        self._client = None
+        self._stdin = None
+        self._stdout = None
+        self._stderr = None
+        self._channel = None
+        self._commands = Queue()
+        self._running = False
+        self._connected = False
+
+    @pyqtSlot(str)
+    def enqueue_command(self, command: str):
+        cmd = (command or "").strip()
+        if cmd:
+            self._commands.put(cmd)
+
+    @pyqtSlot()
+    def stop(self):
+        self._commands.put("__disconnect__")
+
+    def _emit_log(self, message):
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.log.emit(f"[SSH] [{ts}] {message}")
+
+    def run(self):
+        if paramiko is None:
+            self.failed.emit("Paramiko is not installed. Install it to enable remote automation.")
+            return
+
+        try:
+            self._client = paramiko.SSHClient()
+            self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self._emit_log(f"Connecting to {self.user}@{self.host} ...")
+            self._client.connect(
+                hostname=self.host,
+                port=self.port,
+                username=self.user,
+                password=self.password,
+                timeout=10,
+                allow_agent=False,
+                look_for_keys=False,
+            )
+            self._emit_log("SSH connection established.")
+            self._run_remote_command(f"cd {self.remote_dir} && {self.compile_cmd}")
+            self._start_master_queue()
+            self._running = True
+            self._connected = True
+            self.success.emit()
+            while self._running:
+                self._pump_stdout()
+                try:
+                    cmd = self._commands.get(timeout=0.2)
+                except Empty:
+                    continue
+                if cmd == "__disconnect__":
+                    break
+                self._send_line(cmd)
+            self._emit_log("Stopping remote session.")
+        except paramiko.AuthenticationException:
+            self.auth_failed.emit()
+        except Exception as exc:
+            if self._connected:
+                self.connection_lost.emit(str(exc))
+            else:
+                self.failed.emit(str(exc))
+        finally:
+            self._running = False
+            self._cleanup()
+
+    def _run_remote_command(self, command, needs_sudo=False):
+        self._emit_log(f"Running: {command}")
+        stdin, stdout, stderr = self._client.exec_command(command, get_pty=needs_sudo)
+        try:
+            if needs_sudo:
+                stdin.write(self.password + "\n")
+                stdin.flush()
+            out = stdout.read().decode(errors="ignore").strip()
+            err = stderr.read().decode(errors="ignore").strip()
+            exit_status = stdout.channel.recv_exit_status()
+            if out:
+                self._emit_log(out)
+            if err:
+                self._emit_log(f"[stderr] {err}")
+            if exit_status != 0:
+                raise RuntimeError(f"Remote command failed ({exit_status})")
+        finally:
+            stdin.close()
+            stdout.close()
+            stderr.close()
+
+    def _start_master_queue(self):
+        self._emit_log("Launching master_queue (interactive).")
+        self._stdin, self._stdout, self._stderr = self._client.exec_command(
+            f"cd {self.remote_dir} && sudo -S ./master_queue",
+            get_pty=True,
+        )
+        self._channel = self._stdout.channel
+        self._stdin.write(self.password + "\n")
+        self._stdin.flush()
+
+    def _pump_stdout(self):
+        if not self._channel:
+            return
+        try:
+            while self._channel.recv_ready():
+                data = self._channel.recv(4096).decode(errors="ignore")
+                if data:
+                    for line in data.replace("\r", "").splitlines():
+                        if line.strip():
+                            self._emit_log(line.strip())
+            if self._channel.exit_status_ready():
+                raise RuntimeError("Remote process exited.")
+        except Exception:
+            raise
+
+    def _send_line(self, command):
+        if not self._stdin:
+            raise RuntimeError("Remote session not ready.")
+        self._emit_log(f"> {command}")
+        self._stdin.write(command.strip() + "\n")
+        self._stdin.flush()
+
+    def _cleanup(self):
+        try:
+            if self._stdin:
+                try:
+                    self._stdin.close()
+                except Exception:
+                    pass
+            if self._stdout:
+                try:
+                    self._stdout.close()
+                except Exception:
+                    pass
+            if self._stderr:
+                try:
+                    self._stderr.close()
+                except Exception:
+                    pass
+            if self._channel:
+                try:
+                    self._channel.close()
+                except Exception:
+                    pass
+            if self._client:
+                self._client.close()
+        finally:
+            self._client = None
+            self._stdin = None
+            self._stdout = None
+            self._stderr = None
+            self._channel = None
 
 
 class PipelineWorker(QObject):
@@ -133,12 +356,39 @@ class HeliCALQt(QMainWindow):
         self.port = "/dev/ttyTHS1"
         self.baud = 115200
 
+        self.ssh_host = "192.168.0.123"
+        self.ssh_user = "jacob"
+        self.remote_dir = "Desktop/HeliCAL_Final"
+        self.wifi_name = "AirBears9000"
+        self.wifi_password = "somecalpun"
+        self._auto_bootstrap_started = False
+        self._ssh_connected = False
+        self._connection_loss_dialog_open = False
+        self.txt_gcode_log = None
+
         self.counts_per_theta_rev = 245426
         self._last_enc_pos = None
         self._last_enc_ts = None
 
         self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        self.connection_indicator = QLabel()
+        self.connection_indicator.setFixedSize(18, 18)
+        self.connection_indicator.setToolTip("SSH Connection Status")
+        self.btn_manual_connect = QPushButton("Connect")
+        self.btn_manual_connect.setFixedWidth(80)
+        self.btn_manual_connect.clicked.connect(lambda: self._initiate_connection(manual=True))
+        self._update_connection_indicator()
+
+        top_bar = QHBoxLayout()
+        top_bar.addStretch(1)
+        top_bar.addWidget(self.connection_indicator)
+        top_bar.addWidget(self.btn_manual_connect)
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.addLayout(top_bar)
+        layout.addWidget(self.tabs)
+        self.setCentralWidget(central)
 
         self._build_tab_pipeline()
         self._build_tab_dc_encoder()
@@ -150,6 +400,143 @@ class HeliCALQt(QMainWindow):
 
         self._thread = None
         self._worker = None
+        self._ssh_thread = None
+        self._ssh_worker = None
+
+        self.connection_poll_timer = QTimer(self)
+        self.connection_poll_timer.setInterval(5000)
+        self.connection_poll_timer.timeout.connect(self._check_connection_health)
+        self.connection_poll_timer.start()
+
+        QTimer.singleShot(750, self._initiate_connection)
+
+    def _update_connection_indicator(self):
+        color = "#1f8bff" if self._ssh_connected else "#c22525"
+        self.connection_indicator.setStyleSheet(
+            f"background-color: {color}; border-radius: 9px; border: 1px solid #333;"
+        )
+
+    def _initiate_connection(self, manual=False):
+        if not manual:
+            if self._auto_bootstrap_started:
+                return
+            self._auto_bootstrap_started = True
+        if self._ssh_thread and self._ssh_thread.isRunning():
+            return
+        if paramiko is None:
+            self._append_log("[SSH] Paramiko is not installed; skipping automatic connection.")
+            QMessageBox.warning(self, "SSH Unavailable", "Paramiko is required for remote connection.")
+            return
+        if not self._probe_ssh_host():
+            self._show_connection_failed_message()
+            return
+        self._prompt_remote_password()
+
+    def _probe_ssh_host(self):
+        try:
+            with socket.create_connection((self.ssh_host, 22), timeout=3):
+                return True
+        except OSError as exc:
+            self._append_log(f"[SSH] Probe error: {exc}")
+            return False
+
+    def _check_connection_health(self):
+        if not self._ssh_connected:
+            return
+        if not self._probe_ssh_host():
+            self._ssh_connected = False
+            self._update_connection_indicator()
+            self._handle_connection_interrupted()
+
+    def _handle_connection_interrupted(self):
+        if self._connection_loss_dialog_open:
+            return
+        self._connection_loss_dialog_open = True
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Connection interrupted!")
+        dlg.setText("Connection interrupted!")
+        connect_btn = dlg.addButton("Connect", QMessageBox.AcceptRole)
+        dlg.addButton("Cancel", QMessageBox.RejectRole)
+        dlg.exec_()
+        self._connection_loss_dialog_open = False
+        if dlg.clickedButton() == connect_btn:
+            self._initiate_connection(manual=True)
+
+    def _show_connection_failed_message(self):
+        QMessageBox.critical(
+            self,
+            "Connection failed!",
+            "Connection failed!\nPlease make sure you are connected to the WiFI network:\n"
+            f"{self.wifi_name}\nPassword: {self.wifi_password}",
+        )
+
+    def _prompt_remote_password(self):
+        dlg = PasswordDialog(self, self.ssh_user, self.ssh_host)
+        if dlg.exec_() == QDialog.Accepted:
+            password = dlg.password()
+            if password:
+                self._launch_ssh_worker(password)
+            else:
+                QMessageBox.warning(self, "Password Required", "Please enter a password to continue.")
+                QTimer.singleShot(0, self._prompt_remote_password)
+
+    def _launch_ssh_worker(self, password):
+        if self._ssh_thread and self._ssh_thread.isRunning():
+            self._shutdown_ssh_worker()
+        self._ssh_thread = QThread()
+        self._ssh_worker = SSHCommandWorker(self.ssh_host, self.ssh_user, password, self.remote_dir)
+        self._ssh_worker.moveToThread(self._ssh_thread)
+        self._ssh_thread.started.connect(self._ssh_worker.run)
+        self._ssh_worker.log.connect(self._append_connection_log)
+        self._ssh_worker.success.connect(self._on_ssh_success)
+        self._ssh_worker.failed.connect(self._on_ssh_failed)
+        self._ssh_worker.auth_failed.connect(self._on_ssh_auth_failed)
+        self._ssh_worker.connection_lost.connect(self._on_ssh_connection_lost)
+        self._ssh_thread.finished.connect(self._on_ssh_thread_finished)
+        self._ssh_thread.start()
+
+    def _shutdown_ssh_worker(self):
+        if self._ssh_worker:
+            try:
+                self._ssh_worker.stop()
+            except Exception:
+                pass
+        if self._ssh_thread:
+            self._ssh_thread.quit()
+            self._ssh_thread.wait(200)
+            self._ssh_thread = None
+            self._ssh_worker = None
+
+    def _on_ssh_thread_finished(self):
+        self._ssh_thread = None
+        self._ssh_worker = None
+
+    def _on_ssh_success(self):
+        self._ssh_connected = True
+        self._update_connection_indicator()
+        QMessageBox.information(self, "Connection Successful!", "Connection Successful!")
+
+    def _on_ssh_failed(self, err):
+        self._ssh_connected = False
+        self._update_connection_indicator()
+        self._append_log(f"[SSH] Failure: {err}")
+        self._show_connection_failed_message()
+
+    def _on_ssh_auth_failed(self):
+        self._ssh_connected = False
+        self._update_connection_indicator()
+        QMessageBox.warning(self, "Incorrect password!", "Incorrect password!\nPlease try again!")
+
+    def _on_ssh_connection_lost(self, reason: str):
+        self._ssh_connected = False
+        self._update_connection_indicator()
+        self._append_log(f"[SSH] Connection lost: {reason}")
+        self._handle_connection_interrupted()
+
+    def _append_connection_log(self, msg: str):
+        self._append_log(msg)
+        self._append_gcode_log(msg)
+        QTimer.singleShot(0, self._prompt_remote_password)
 
     def _build_tab_pipeline(self):
         tab = QWidget()
@@ -408,95 +795,252 @@ class HeliCALQt(QMainWindow):
 
     def _build_tab_steppers(self):
         tab = QWidget()
-        v = QVBoxLayout(tab)
+        layout = QVBoxLayout(tab)
 
-        info = QLabel(
-            "Basic stepper controls (placeholders). Align command bytes with firmware.\n"
-            "Suggested protocol (example):\n"
-            "  0x50 axis enable  : [0x50, axis_id, 1|0, 0, 0, 0]\n"
-            "  0x51 jog steps    : [0x51, axis_id, <int32 steps>]\n"
-            "  0x52 set position : [0x52, axis_id, <int32 steps>]\n"
-            "  0x53 set speed    : [0x53, axis_id, <int32 steps_per_s>]\n"
-        )
-        info.setWordWrap(True)
-        v.addWidget(info)
+        motion_group = QGroupBox("Motion Commands")
+        motion_form = QFormLayout()
 
-        axis_row = QHBoxLayout()
-        self.cb_axis = QComboBox()
-        self.cb_axis.addItems(["X1", "Y1", "Z1", "X2", "Y2", "Z2"])
-        axis_row.addWidget(QLabel("Axis:"))
-        axis_row.addWidget(self.cb_axis)
-        v.addLayout(axis_row)
+        def _axis_inputs(placeholders):
+            row = QHBoxLayout()
+            edits = []
+            for text in placeholders:
+                le = QLineEdit()
+                le.setPlaceholderText(text)
+                row.addWidget(le)
+                edits.append(le)
+            return row, edits
 
-        en_row = QHBoxLayout()
-        btn_en = QPushButton("Enable")
-        btn_en.clicked.connect(lambda: self._send_stepper_enable(True))
-        btn_dis = QPushButton("Disable")
-        btn_dis.clicked.connect(lambda: self._send_stepper_enable(False))
-        en_row.addWidget(btn_en); en_row.addWidget(btn_dis)
-        v.addLayout(en_row)
+        g0_row, g0_edits = _axis_inputs(["R (mm)", "T (mm)", "Z (mm)"])
+        self.le_g0_r, self.le_g0_t, self.le_g0_z = g0_edits
+        btn_g0 = QPushButton("Send G0 (Rapid)")
+        btn_g0.clicked.connect(lambda: self._send_axis_command("G0", {
+            "R": self.le_g0_r,
+            "T": self.le_g0_t,
+            "Z": self.le_g0_z,
+        }))
+        g0_row.addWidget(btn_g0)
+        motion_form.addRow("G0 Rapid", g0_row)
 
-        jog_row = QHBoxLayout()
-        self.sb_jog = QSpinBox(); self.sb_jog.setRange(-2000000, 2000000); self.sb_jog.setValue(200)
-        btn_jog = QPushButton("Jog (steps)")
-        btn_jog.clicked.connect(self._send_stepper_jog)
-        jog_row.addWidget(QLabel("Steps:")); jog_row.addWidget(self.sb_jog); jog_row.addWidget(btn_jog)
-        v.addLayout(jog_row)
+        g1_row, g1_edits = _axis_inputs(["R (mm)", "T (mm)", "Z (mm)"])
+        self.le_g1_r, self.le_g1_t, self.le_g1_z = g1_edits
+        self.le_g1_fr = QLineEdit(); self.le_g1_fr.setPlaceholderText("FR (mm/min)")
+        self.le_g1_ft = QLineEdit(); self.le_g1_ft.setPlaceholderText("FT (mm/min)")
+        self.le_g1_fz = QLineEdit(); self.le_g1_fz.setPlaceholderText("FZ (mm/min)")
+        g1_row.addWidget(self.le_g1_fr)
+        g1_row.addWidget(self.le_g1_ft)
+        g1_row.addWidget(self.le_g1_fz)
+        btn_g1 = QPushButton("Send G1 (Linear)")
+        btn_g1.clicked.connect(lambda: self._send_axis_command(
+            "G1",
+            {"R": self.le_g1_r, "T": self.le_g1_t, "Z": self.le_g1_z},
+            self._collect_feedrates()
+        ))
+        g1_row.addWidget(btn_g1)
+        motion_form.addRow("G1 Linear", g1_row)
+        motion_group.setLayout(motion_form)
+        layout.addWidget(motion_group)
 
-        pos_row = QHBoxLayout()
-        self.sb_pos = QSpinBox(); self.sb_pos.setRange(-200000000, 200000000); self.sb_pos.setValue(0)
-        btn_pos = QPushButton("Set Target Position (steps)")
-        btn_pos.clicked.connect(self._send_stepper_setpos)
-        pos_row.addWidget(QLabel("Target:")); pos_row.addWidget(self.sb_pos); pos_row.addWidget(btn_pos)
-        v.addLayout(pos_row)
+        wait_group = QGroupBox("Timing / Flow Control")
+        wait_layout = QHBoxLayout()
+        self.sb_g4_wait = QDoubleSpinBox(); self.sb_g4_wait.setDecimals(1); self.sb_g4_wait.setRange(0.1, 3600.0); self.sb_g4_wait.setValue(10.0)
+        self.sb_g4_wait.setSuffix(" s")
+        btn_g4 = QPushButton("Send G4 (Pause)")
+        btn_g4.clicked.connect(self._send_g4_wait)
+        btn_g5 = QPushButton("G5 (Wait for RPM)")
+        btn_g5.clicked.connect(lambda: self._send_gcode_command("G5"))
+        btn_g6 = QPushButton("G6 (Wait for Metrology)")
+        btn_g6.clicked.connect(lambda: self._send_gcode_command("G6"))
+        wait_layout.addWidget(QLabel("G4 Duration:"))
+        wait_layout.addWidget(self.sb_g4_wait)
+        wait_layout.addWidget(btn_g4)
+        wait_layout.addWidget(btn_g5)
+        wait_layout.addWidget(btn_g6)
+        wait_group.setLayout(wait_layout)
+        layout.addWidget(wait_group)
 
-        spd_row = QHBoxLayout()
-        self.sb_spd = QSpinBox(); self.sb_spd.setRange(0, 2000000); self.sb_spd.setValue(2000)
-        btn_spd = QPushButton("Set Speed (steps/s)")
-        btn_spd.clicked.connect(self._send_stepper_speed)
-        spd_row.addWidget(QLabel("Speed:")); spd_row.addWidget(self.sb_spd); spd_row.addWidget(btn_spd)
-        v.addLayout(spd_row)
+        control_group = QGroupBox("Machine / Axis Control")
+        control_layout = QGridLayout()
+        self.sb_g33_rpm = QSpinBox(); self.sb_g33_rpm.setRange(0, 5000); self.sb_g33_rpm.setValue(1000)
+        btn_g33 = QPushButton("G33 (A RPM)")
+        btn_g33.clicked.connect(lambda: self._send_gcode_command(f"G33 A{self.sb_g33_rpm.value()}"))
+        control_layout.addWidget(QLabel("A-axis RPM:"), 0, 0)
+        control_layout.addWidget(self.sb_g33_rpm, 0, 1)
+        control_layout.addWidget(btn_g33, 0, 2)
 
-        self.tabs.addTab(tab, "Steppers")
+        self.sb_feed_rate = QSpinBox(); self.sb_feed_rate.setRange(1, 1000000); self.sb_feed_rate.setValue(100)
+        btn_feed = QPushButton("Set Feed (F)")
+        btn_feed.clicked.connect(lambda: self._send_gcode_command(f"F{self.sb_feed_rate.value()}"))
+        control_layout.addWidget(QLabel("Feed Rate (mm/s):"), 1, 0)
+        control_layout.addWidget(self.sb_feed_rate, 1, 1)
+        control_layout.addWidget(btn_feed, 1, 2)
 
-    def _axis_id(self):
-        mapping = {"X1":0, "Y1":1, "Z1":2, "X2":3, "Y2":4, "Z2":5}
-        return mapping[self.cb_axis.currentText()]
+        btn_m17 = QPushButton("M17 (Motors ON)")
+        btn_m17.clicked.connect(lambda: self._send_gcode_command("M17"))
+        btn_m18 = QPushButton("M18 (Motors OFF)")
+        btn_m18.clicked.connect(lambda: self._send_gcode_command("M18"))
+        btn_m112 = QPushButton("M112 (E-Stop)")
+        btn_m112.clicked.connect(lambda: self._send_gcode_command("M112"))
+        btn_g28 = QPushButton("G28 (Home)")
+        btn_g28.clicked.connect(lambda: self._send_gcode_command("G28"))
 
-    def _uart_write(self, data: bytes):
-        if not self.serial or not self.serial.is_open:
-            QMessageBox.warning(self, "UART", "Connect to ESP32 first (on DC/Encoder tab).")
+        control_layout.addWidget(btn_m17, 2, 0)
+        control_layout.addWidget(btn_m18, 2, 1)
+        control_layout.addWidget(btn_m112, 2, 2)
+        control_layout.addWidget(btn_g28, 3, 0)
+
+        btn_g90 = QPushButton("G90 (Absolute)")
+        btn_g90.clicked.connect(lambda: self._send_gcode_command("G90"))
+        btn_g91 = QPushButton("G91 (Relative)")
+        btn_g91.clicked.connect(lambda: self._send_gcode_command("G91"))
+        self.cb_g92_axis = QComboBox()
+        self.cb_g92_axis.addItems(["R", "T", "Z", "X", "Y", "A"])
+        btn_g92 = QPushButton("G92 Zero Axis")
+        btn_g92.clicked.connect(self._send_g92_zero)
+        control_layout.addWidget(btn_g90, 3, 1)
+        control_layout.addWidget(btn_g91, 3, 2)
+        control_layout.addWidget(QLabel("G92 Axis:"), 4, 0)
+        control_layout.addWidget(self.cb_g92_axis, 4, 1)
+        control_layout.addWidget(btn_g92, 4, 2)
+
+        control_group.setLayout(control_layout)
+        layout.addWidget(control_group)
+
+        projector_group = QGroupBox("Projector Control")
+        proj_layout = QHBoxLayout()
+        proj_cmds = [
+            ("M200 On", "M200"),
+            ("M201 Off", "M201"),
+            ("M202 Play", "M202"),
+            ("M203 Pause", "M203"),
+            ("M204 Restart", "M204"),
+        ]
+        for label_text, cmd in proj_cmds:
+            btn = QPushButton(label_text)
+            btn.clicked.connect(lambda checked=False, c=cmd: self._send_gcode_command(c))
+            proj_layout.addWidget(btn)
+        projector_group.setLayout(proj_layout)
+        layout.addWidget(projector_group)
+
+        seq_group = QGroupBox("Sequences")
+        seq_layout = QHBoxLayout()
+        btn_start_seq = QPushButton("Run Start Sequence")
+        btn_start_seq.clicked.connect(self._send_start_sequence)
+        btn_end_seq = QPushButton("Run End Sequence")
+        btn_end_seq.clicked.connect(self._send_end_sequence)
+        seq_layout.addWidget(btn_start_seq)
+        seq_layout.addWidget(btn_end_seq)
+        seq_group.setLayout(seq_layout)
+        layout.addWidget(seq_group)
+
+        custom_group = QGroupBox("Custom Command")
+        custom_layout = QHBoxLayout()
+        self.le_custom_cmd = QLineEdit()
+        self.le_custom_cmd.setPlaceholderText("e.g., G4 P10")
+        btn_custom = QPushButton("Send")
+        btn_custom.clicked.connect(self._send_custom_command)
+        custom_layout.addWidget(self.le_custom_cmd, 1)
+        custom_layout.addWidget(btn_custom)
+        custom_group.setLayout(custom_layout)
+        layout.addWidget(custom_group)
+
+        self.txt_gcode_log = QTextEdit()
+        self.txt_gcode_log.setReadOnly(True)
+        layout.addWidget(QLabel("G-code Console"))
+        layout.addWidget(self.txt_gcode_log, 1)
+
+        self.tabs.addTab(tab, "G-Code")
+
+    def _append_gcode_log(self, msg: str):
+        if hasattr(self, "txt_gcode_log") and self.txt_gcode_log:
+            self.txt_gcode_log.append(msg)
+
+    def _ensure_remote_ready(self) -> bool:
+        if not self._ssh_worker or not self._ssh_connected:
+            QMessageBox.warning(self, "SSH", "Connect to the Jetson before sending G-code.")
             return False
+        return True
+
+    def _send_gcode_command(self, command: str):
+        command = command.strip()
+        if not command:
+            return
+        if not self._ensure_remote_ready():
+            return
+        self._append_gcode_log(f"> {command}")
         try:
-            self.serial.write(data)
-            self.serial.flush()
-            return True
-        except Exception as e:
-            QMessageBox.critical(self, "UART", f"UART write failed: {e}")
-            return False
+            self._ssh_worker.enqueue_command(command)
+        except Exception as exc:
+            self._append_gcode_log(f"[LOCAL] Failed to queue command: {exc}")
 
-    def _send_stepper_enable(self, enable: bool):
-        axis = self._axis_id()
-        pkt = bytearray([0x50, axis, 1 if enable else 0, 0, 0, 0])
-        self._uart_write(pkt)
+    def _collect_feedrates(self):
+        parts = []
+        for prefix, widget in (("FR", self.le_g1_fr), ("FT", self.le_g1_ft), ("FZ", self.le_g1_fz)):
+            val = widget.text().strip()
+            if val:
+                parts.append(f"{prefix}{val}")
+        return parts
 
-    def _send_stepper_jog(self):
-        axis = self._axis_id()
-        steps = int(self.sb_jog.value())
-        pkt = bytearray([0x51, axis]) + int(steps).to_bytes(4, "little", signed=True)
-        self._uart_write(pkt)
+    def _send_axis_command(self, base, axis_widgets, extra_parts=None):
+        parts = [base]
+        for axis, widget in axis_widgets.items():
+            val = widget.text().strip()
+            if val:
+                parts.append(f"{axis}{val}")
+        if extra_parts:
+            parts.extend(extra_parts)
+        if len(parts) == 1:
+            QMessageBox.warning(self, base, "Enter at least one axis value.")
+            return
+        self._send_gcode_command(" ".join(parts))
 
-    def _send_stepper_setpos(self):
-        axis = self._axis_id()
-        pos = int(self.sb_pos.value())
-        pkt = bytearray([0x52, axis]) + int(pos).to_bytes(4, "little", signed=True)
-        self._uart_write(pkt)
+    def _send_g4_wait(self):
+        seconds = self.sb_g4_wait.value()
+        self._send_gcode_command(f"G4 P{seconds}")
 
-    def _send_stepper_speed(self):
-        axis = self._axis_id()
-        spd = int(self.sb_spd.value())
-        pkt = bytearray([0x53, axis]) + int(spd).to_bytes(4, "little", signed=True)
-        self._uart_write(pkt)
+    def _send_g92_zero(self):
+        axis = self.cb_g92_axis.currentText()
+        self._send_gcode_command(f"G92 {axis}")
+
+    def _send_custom_command(self):
+        cmd = self.le_custom_cmd.text()
+        self._send_gcode_command(cmd)
+        self.le_custom_cmd.clear()
+
+    def _send_start_sequence(self):
+        g0_cmd = self._build_axis_command_for_sequence()
+        if not g0_cmd:
+            QMessageBox.warning(self, "Start Sequence", "Provide at least one axis value in the G0 row for the start sequence.")
+            return
+        commands = [
+            "M17",
+            "G28",
+            g0_cmd,
+            "G92",
+            "G33 A9",
+            "G5",
+        ]
+        for cmd in commands:
+            self._send_gcode_command(cmd)
+
+    def _send_end_sequence(self):
+        commands = ["G33 A0", "G28", "M18"]
+        for cmd in commands:
+            self._send_gcode_command(cmd)
+
+    def _build_axis_command_for_sequence(self):
+        axis_widgets = {"R": self.le_g0_r, "T": self.le_g0_t, "Z": self.le_g0_z}
+        parts = ["G0"]
+        for axis, widget in axis_widgets.items():
+            val = widget.text().strip()
+            if val:
+                parts.append(f"{axis}{val}")
+        if len(parts) == 1:
+            return None
+        return " ".join(parts)
+
+    def closeEvent(self, event):
+        self._shutdown_ssh_worker()
+        super().closeEvent(event)
 
 
 def main():

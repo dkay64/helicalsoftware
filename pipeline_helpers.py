@@ -1,6 +1,11 @@
 import os
+from typing import Optional
+
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # headless backend for worker threads
 import matplotlib.pyplot as plt
+
 
 # Compatibility for older code that uses np.bool
 if not hasattr(np, "bool"):
@@ -48,7 +53,7 @@ def _sino_preview_2d(sino_array: np.ndarray) -> np.ndarray:
     return arr[..., arr.shape[-1] // 2]
 
 
-def resolve_stl_path(user_path: str | None, demo_mode: bool) -> str:
+def resolve_stl_path(user_path: Optional[str], demo_mode: bool) -> str:
     """
     Resolve an STL path for voxelization.
     Priority:
@@ -315,10 +320,10 @@ def save_reconstruction_video(output_dir: str, sino: 'Sinogram') -> str:
         # Save as MP4 video
         imgset.saveAsVideo(
             save_path=video_path,
-            rot_vel=36,      # Rotation speed (degrees per second)
-            num_loops=5,     # Number of full rotations
-            preview=False    # Disable GUI preview window
+            rot_vel=36,
+            preview=False
         )
+
         log(f"Saved video: {video_path}")
         return video_path
 
