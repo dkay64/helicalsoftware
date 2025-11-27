@@ -30,6 +30,7 @@ import os
 import time
 import socket
 from queue import Queue, Empty
+from pathlib import Path
 
 from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread, QEvent, pyqtSlot
 from PyQt5.QtWidgets import (
@@ -349,7 +350,7 @@ class PipelineWorker(QObject):
 class HeliCALQt(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HeliCAL Control Center (PyQt5)")
+        self.setWindowTitle("HeliCAL Control Panel")
         self.resize(980, 720)
 
         self.serial = None
@@ -365,6 +366,8 @@ class HeliCALQt(QMainWindow):
         self._ssh_connected = False
         self._connection_loss_dialog_open = False
         self.txt_gcode_log = None
+        self.le_jog_step = None
+        self.le_jog_feed = None
 
         self.counts_per_theta_rev = 245426
         self._last_enc_pos = None
@@ -943,9 +946,47 @@ class HeliCALQt(QMainWindow):
         custom_group.setLayout(custom_layout)
         layout.addWidget(custom_group)
 
+        jog_group = QGroupBox("Jog Control")
+        jog_layout = QGridLayout()
+        self.le_jog_step = QDoubleSpinBox(); self.le_jog_step.setDecimals(3); self.le_jog_step.setRange(0.001, 10000.0); self.le_jog_step.setValue(1.0); self.le_jog_step.setSuffix(" mm")
+        self.le_jog_feed = QDoubleSpinBox(); self.le_jog_feed.setDecimals(1); self.le_jog_feed.setRange(0.1, 100000.0); self.le_jog_feed.setValue(50.0); self.le_jog_feed.setSuffix(" mm/s")
+        jog_layout.addWidget(QLabel("Step Size:"), 0, 0)
+        jog_layout.addWidget(self.le_jog_step, 0, 1)
+        jog_layout.addWidget(QLabel("Jog Speed:"), 0, 2)
+        jog_layout.addWidget(self.le_jog_feed, 0, 3)
+
+        btn_r_minus = QPushButton("-R")
+        btn_r_minus.clicked.connect(lambda: self._send_jog("R", -1))
+        btn_r_plus = QPushButton("+R")
+        btn_r_plus.clicked.connect(lambda: self._send_jog("R", 1))
+        btn_t_minus = QPushButton("-T")
+        btn_t_minus.clicked.connect(lambda: self._send_jog("T", -1))
+        btn_t_plus = QPushButton("+T")
+        btn_t_plus.clicked.connect(lambda: self._send_jog("T", 1))
+        btn_z_minus = QPushButton("-Z")
+        btn_z_minus.clicked.connect(lambda: self._send_jog("Z", -1))
+        btn_z_plus = QPushButton("+Z")
+        btn_z_plus.clicked.connect(lambda: self._send_jog("Z", 1))
+
+        jog_layout.addWidget(btn_r_minus, 1, 0)
+        jog_layout.addWidget(btn_r_plus, 1, 1)
+        jog_layout.addWidget(btn_t_minus, 1, 2)
+        jog_layout.addWidget(btn_t_plus, 1, 3)
+        jog_layout.addWidget(btn_z_minus, 2, 0)
+        jog_layout.addWidget(btn_z_plus, 2, 1)
+
+        jog_group.setLayout(jog_layout)
+        layout.addWidget(jog_group)
+
         self.txt_gcode_log = QTextEdit()
         self.txt_gcode_log.setReadOnly(True)
-        layout.addWidget(QLabel("G-code Console"))
+        log_header = QHBoxLayout()
+        log_header.addWidget(QLabel("G-code Console"))
+        btn_save_log = QPushButton("Save Output")
+        btn_save_log.clicked.connect(self._save_gcode_log)
+        log_header.addStretch(1)
+        log_header.addWidget(btn_save_log)
+        layout.addLayout(log_header)
         layout.addWidget(self.txt_gcode_log, 1)
 
         self.tabs.addTab(tab, "G-Code")
@@ -1005,6 +1046,41 @@ class HeliCALQt(QMainWindow):
         cmd = self.le_custom_cmd.text()
         self._send_gcode_command(cmd)
         self.le_custom_cmd.clear()
+
+    def _save_gcode_log(self):
+        if not self.txt_gcode_log:
+            return
+        default_path = Path.home() / "gcode_output.txt"
+        fname, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save G-code Output",
+            str(default_path),
+            "Text Files (*.txt);;All Files (*.*)",
+        )
+        if not fname:
+            return
+        try:
+            Path(fname).write_text(self.txt_gcode_log.toPlainText(), encoding="utf-8")
+            QMessageBox.information(self, "Saved", f"G code output saved to:\n{fname}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Failed", f"Could not save log: {exc}")
+
+    def _send_jog(self, axis: str, direction: int):
+        if not self._ensure_remote_ready():
+            return
+        step = float(self.le_jog_step.value()) if self.le_jog_step else 0.0
+        feed = float(self.le_jog_feed.value()) if self.le_jog_feed else 0.0
+        if step <= 0 or feed <= 0:
+            QMessageBox.warning(self, "Jog", "Set a positive step size and jog speed.")
+            return
+        delta = step * direction
+        commands = [
+            "G91",
+            f"G1 {axis}{delta} F{feed}",
+            "G90",
+        ]
+        for cmd in commands:
+            self._send_gcode_command(cmd)
 
     def _send_start_sequence(self):
         g0_cmd = self._build_axis_command_for_sequence()
