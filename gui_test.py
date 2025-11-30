@@ -364,7 +364,8 @@ class HeliCALQt(QMainWindow):
         self.wifi_password = "somecalpun"
         self._auto_bootstrap_started = False
         self._ssh_connected = False
-        self._connection_loss_dialog_open = False
+        self._password_dialog_open = False
+        self._ssh_connecting = False
         self.txt_gcode_log = None
         self.le_jog_step = None
         self.le_jog_feed = None
@@ -380,12 +381,17 @@ class HeliCALQt(QMainWindow):
         self.btn_manual_connect = QPushButton("Connect")
         self.btn_manual_connect.setFixedWidth(80)
         self.btn_manual_connect.clicked.connect(lambda: self._initiate_connection(manual=True))
+        self.btn_manual_disconnect = QPushButton("Disconnect")
+        self.btn_manual_disconnect.setFixedWidth(100)
+        self.btn_manual_disconnect.clicked.connect(self._disconnect_clicked)
+        self.btn_manual_disconnect.setEnabled(False)
         self._update_connection_indicator()
 
         top_bar = QHBoxLayout()
         top_bar.addStretch(1)
         top_bar.addWidget(self.connection_indicator)
         top_bar.addWidget(self.btn_manual_connect)
+        top_bar.addWidget(self.btn_manual_disconnect)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -406,11 +412,6 @@ class HeliCALQt(QMainWindow):
         self._ssh_thread = None
         self._ssh_worker = None
 
-        self.connection_poll_timer = QTimer(self)
-        self.connection_poll_timer.setInterval(5000)
-        self.connection_poll_timer.timeout.connect(self._check_connection_health)
-        self.connection_poll_timer.start()
-
         QTimer.singleShot(750, self._initiate_connection)
 
     def _update_connection_indicator(self):
@@ -418,12 +419,21 @@ class HeliCALQt(QMainWindow):
         self.connection_indicator.setStyleSheet(
             f"background-color: {color}; border-radius: 9px; border: 1px solid #333;"
         )
+        self.btn_manual_connect.setEnabled(not self._ssh_connected and not self._ssh_connecting)
+        if self.btn_manual_disconnect:
+            self.btn_manual_disconnect.setEnabled(self._ssh_connected)
 
     def _initiate_connection(self, manual=False):
-        if not manual:
-            if self._auto_bootstrap_started:
-                return
+        if self._ssh_connected:
+            if manual:
+                QMessageBox.information(self, "SSH", "Already connected to the Jetson.")
+            return
+        if not self._auto_bootstrap_started:
             self._auto_bootstrap_started = True
+        elif not manual:
+            return
+        if self._ssh_connecting:
+            return
         if self._ssh_thread and self._ssh_thread.isRunning():
             return
         if paramiko is None:
@@ -443,28 +453,6 @@ class HeliCALQt(QMainWindow):
             self._append_log(f"[SSH] Probe error: {exc}")
             return False
 
-    def _check_connection_health(self):
-        if not self._ssh_connected:
-            return
-        if not self._probe_ssh_host():
-            self._ssh_connected = False
-            self._update_connection_indicator()
-            self._handle_connection_interrupted()
-
-    def _handle_connection_interrupted(self):
-        if self._connection_loss_dialog_open:
-            return
-        self._connection_loss_dialog_open = True
-        dlg = QMessageBox(self)
-        dlg.setWindowTitle("Connection interrupted!")
-        dlg.setText("Connection interrupted!")
-        connect_btn = dlg.addButton("Connect", QMessageBox.AcceptRole)
-        dlg.addButton("Cancel", QMessageBox.RejectRole)
-        dlg.exec_()
-        self._connection_loss_dialog_open = False
-        if dlg.clickedButton() == connect_btn:
-            self._initiate_connection(manual=True)
-
     def _show_connection_failed_message(self):
         QMessageBox.critical(
             self,
@@ -474,14 +462,40 @@ class HeliCALQt(QMainWindow):
         )
 
     def _prompt_remote_password(self):
+        if self._password_dialog_open or self._ssh_connecting or self._ssh_connected:
+            return
+        self._password_dialog_open = True
         dlg = PasswordDialog(self, self.ssh_user, self.ssh_host)
-        if dlg.exec_() == QDialog.Accepted:
+        result = dlg.exec_()
+        self._password_dialog_open = False
+        if result == QDialog.Accepted:
             password = dlg.password()
             if password:
+                self._ssh_connecting = True
+                self._update_connection_indicator()
                 self._launch_ssh_worker(password)
             else:
                 QMessageBox.warning(self, "Password Required", "Please enter a password to continue.")
                 QTimer.singleShot(0, self._prompt_remote_password)
+
+    def _disconnect_clicked(self):
+        if not self._ssh_connected or not self._ssh_worker:
+            QMessageBox.information(self, "SSH", "System is not connected.")
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Shutdown Jetson",
+            "Send 'sudo shutdown now' to the Jetson? This will disconnect the system.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            self._ssh_worker.enqueue_command("sudo shutdown now")
+            self._ssh_worker.stop()
+        except Exception as exc:
+            QMessageBox.warning(self, "SSH", f"Failed to send shutdown: {exc}")
 
     def _launch_ssh_worker(self, password):
         if self._ssh_thread and self._ssh_thread.isRunning():
@@ -496,9 +510,12 @@ class HeliCALQt(QMainWindow):
         self._ssh_worker.auth_failed.connect(self._on_ssh_auth_failed)
         self._ssh_worker.connection_lost.connect(self._on_ssh_connection_lost)
         self._ssh_thread.finished.connect(self._on_ssh_thread_finished)
+        self._ssh_thread.finished.connect(self._ssh_thread.deleteLater)
         self._ssh_thread.start()
 
     def _shutdown_ssh_worker(self):
+        self._ssh_connecting = False
+        self._update_connection_indicator()
         if self._ssh_worker:
             try:
                 self._ssh_worker.stop()
@@ -506,7 +523,7 @@ class HeliCALQt(QMainWindow):
                 pass
         if self._ssh_thread:
             self._ssh_thread.quit()
-            self._ssh_thread.wait(200)
+            self._ssh_thread.wait(2000)
             self._ssh_thread = None
             self._ssh_worker = None
 
@@ -515,26 +532,32 @@ class HeliCALQt(QMainWindow):
         self._ssh_worker = None
 
     def _on_ssh_success(self):
+        self._ssh_connecting = False
         self._ssh_connected = True
         self._update_connection_indicator()
         QMessageBox.information(self, "Connection Successful!", "Connection Successful!")
 
     def _on_ssh_failed(self, err):
+        self._ssh_connecting = False
         self._ssh_connected = False
         self._update_connection_indicator()
         self._append_log(f"[SSH] Failure: {err}")
         self._show_connection_failed_message()
 
     def _on_ssh_auth_failed(self):
+        self._ssh_connecting = False
         self._ssh_connected = False
         self._update_connection_indicator()
         QMessageBox.warning(self, "Incorrect password!", "Incorrect password!\nPlease try again!")
 
     def _on_ssh_connection_lost(self, reason: str):
+        self._ssh_connecting = False
         self._ssh_connected = False
         self._update_connection_indicator()
         self._append_log(f"[SSH] Connection lost: {reason}")
-        self._handle_connection_interrupted()
+        QMessageBox.critical(self, "SSH Disconnected", f"Connection lost:\n{reason}\nUse Connect to retry.")
+        # Allow a fresh manual reconnect without auto-prompt loops
+        self._auto_bootstrap_started = False
 
     def _append_connection_log(self, msg: str):
         self._append_log(msg)
