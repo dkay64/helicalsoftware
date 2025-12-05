@@ -1,37 +1,21 @@
 #include "Esp32UART.h"
+
+#include <chrono>
+#include <errno.h>
 #include <fcntl.h>
-#include <unistd.h>
 #include <stdexcept>
 #include <cstring>
 #include <termios.h>
-#include <errno.h>
 #include <sys/ioctl.h>
 #include <sstream>
 #include <iostream>
 #include <iomanip>
 #include <unistd.h>
 
-// --- Command Definitions ---
-// Encoder Commands (0x10)
-#define CMD_ENCODER_POSITION 0x10
-#define ENCODER_ALL          0xFF
-
-// DC Driver Commands (0x20)
-#define CMD_DC_DRIVER        0x20
-#define DC_SUB_PWM           0x01
-#define DC_SUB_DIR           0x02
-
-// Theta Zeroing Commands (0x40)
-#define CMD_THETA_ZERO       0x40
-#define THETA_ZERO_START     0x01
-#define THETA_ZERO_STATUS    0x02
-#define THETA_ZERO_READ      0x03
-
-// Theta Velocity Commands (0x30)
-// This command sends 6 bytes: Byte 0 = CMD_THETA_VEL,
-// Byte 1 = THETA_VEL_SET, Bytes 2-5 = 32-bit little-endian velocity.
-#define CMD_THETA_VEL        0x30
-#define THETA_VEL_SET        0x01
+namespace {
+constexpr size_t SAMPLE_PAYLOAD_SIZE = sizeof(Esp32UART::SamplePayload);
+static_assert(SAMPLE_PAYLOAD_SIZE == 44, "Unexpected IMU sample payload size");
+}
 
 Esp32UART::Esp32UART(const std::string &uartDevice, int baudRate)
     : device(uartDevice), baud(baudRate)
@@ -179,4 +163,159 @@ void Esp32UART::setThetaVelocity(int32_t velocity) {
     if(n_read != sizeof(ack) || ack == 0)
         throw std::runtime_error("Failed to receive ACK for theta velocity command");
     */
+}
+
+bool Esp32UART::getImuSample(ImuSample& outSample, uint32_t timeoutMs) {
+    writeCommand(CMD_IMU, IMU_SUB_GET_SAMPLE, 0x00);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+
+    PacketHeader header;
+    std::vector<uint8_t> payload;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!readPacket(header, payload, deadline)) {
+            break;
+        }
+
+        if (header.type == PACKET_TYPE_SAMPLE) {
+            if (!parseSamplePayload(payload, outSample)) {
+                return false;
+            }
+            if (!waitForImuAck(IMU_SUB_GET_SAMPLE, deadline)) {
+                std::cerr << "[IMU] Timeout waiting for sample ACK\n";
+                return false;
+            }
+            return true;
+        }
+
+        if (header.type == PACKET_TYPE_ACK && payload.size() >= 3 && payload[1] == IMU_SUB_GET_SAMPLE) {
+            if (payload[2] == 0) {
+                return false;
+            }
+            if (hasLatestImuSample_) {
+                outSample = latestImuSample_;
+                return true;
+            }
+        }
+
+        if (header.type == PACKET_TYPE_STATUS) {
+            std::string msg(payload.begin(), payload.end());
+            std::cout << "[ESP32][IMU] " << msg << std::endl;
+        }
+    }
+
+    return false;
+}
+
+bool Esp32UART::requestImuCalibration(uint32_t timeoutMs) {
+    writeCommand(CMD_IMU, IMU_SUB_START_CALIB, 0x00);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    return waitForImuAck(IMU_SUB_START_CALIB, deadline);
+}
+
+bool Esp32UART::readBytes(uint8_t* dst, size_t len, std::chrono::steady_clock::time_point deadline) {
+    size_t offset = 0;
+    while (offset < len) {
+        ssize_t n = read(uartFd, dst + offset, len - offset);
+        if (n > 0) {
+            offset += static_cast<size_t>(n);
+            continue;
+        }
+
+        if (n == 0 || (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return false;
+            }
+            usleep(2000);
+            continue;
+        }
+
+        throw std::runtime_error("Failed to read UART data: " + std::string(strerror(errno)));
+    }
+
+    return true;
+}
+
+bool Esp32UART::readPacket(PacketHeader& header, std::vector<uint8_t>& payload, std::chrono::steady_clock::time_point deadline) {
+    while (std::chrono::steady_clock::now() < deadline) {
+        uint8_t sync = 0;
+        if (!readBytes(&sync, 1, deadline)) {
+            return false;
+        }
+        if (sync != 'I') {
+            continue;
+        }
+
+        uint8_t rest[3] = {0};
+        if (!readBytes(rest, sizeof(rest), deadline)) {
+            return false;
+        }
+        if (rest[0] != 'M') {
+            continue;
+        }
+
+        header.sync0 = 'I';
+        header.sync1 = 'M';
+        header.type = rest[1];
+        header.length = rest[2];
+
+        payload.resize(header.length);
+        if (header.length == 0) {
+            return true;
+        }
+
+        return readBytes(payload.data(), payload.size(), deadline);
+    }
+
+    return false;
+}
+
+bool Esp32UART::parseSamplePayload(const std::vector<uint8_t>& payload, ImuSample& outSample) {
+    if (payload.size() != SAMPLE_PAYLOAD_SIZE) {
+        return false;
+    }
+
+    SamplePayload raw{};
+    std::memcpy(&raw, payload.data(), SAMPLE_PAYLOAD_SIZE);
+
+    outSample.timestampUs = raw.timestampUs;
+    outSample.ax = raw.ax;
+    outSample.ay = raw.ay;
+    outSample.az = raw.az;
+    outSample.gx = raw.gx;
+    outSample.gy = raw.gy;
+    outSample.gz = raw.gz;
+    outSample.omega = raw.omega;
+    outSample.radialAccel = raw.radialAccel;
+    outSample.correctiveMass_g = raw.correctiveMass_g;
+    outSample.correctiveAngle_deg = raw.correctiveAngle_deg;
+
+    latestImuSample_ = outSample;
+    hasLatestImuSample_ = true;
+    return true;
+}
+
+bool Esp32UART::waitForImuAck(uint8_t subcommand, std::chrono::steady_clock::time_point deadline) {
+    PacketHeader header;
+    std::vector<uint8_t> payload;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!readPacket(header, payload, deadline)) {
+            return false;
+        }
+
+        if (header.type == PACKET_TYPE_ACK && payload.size() >= 3 && payload[1] == subcommand) {
+            return payload[2] != 0;
+        }
+
+        if (header.type == PACKET_TYPE_SAMPLE) {
+            ImuSample sample;
+            parseSamplePayload(payload, sample);
+        } else if (header.type == PACKET_TYPE_STATUS) {
+            std::string msg(payload.begin(), payload.end());
+            std::cout << "[ESP32][IMU] " << msg << std::endl;
+        }
+    }
+
+    return false;
 }
