@@ -11,6 +11,7 @@
 #include <iostream>
 #include <iomanip>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 constexpr size_t SAMPLE_PAYLOAD_SIZE = sizeof(Esp32UART::SamplePayload);

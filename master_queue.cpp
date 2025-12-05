@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <queue>
+#include <iomanip>
 
 // Sample commmand - for some reason z comm waits for us to press enter to be executed
 /* G91 

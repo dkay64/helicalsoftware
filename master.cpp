@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <queue>
+#include <iomanip>
 
 using namespace std;
 
@@ -120,6 +121,24 @@ static inline uint32_t axis_max_speed(char axis) {
         case 'Z': return STEPPER_Z_MAXVELOCITY;
         default:  return 0;
     }
+}
+
+static void print_imu_sample(const Esp32UART::ImuSample& sample) {
+    std::ios::fmtflags oldFlags = std::cout.flags();
+    std::streamsize oldPrec = std::cout.precision();
+
+    std::cout << std::fixed << std::setprecision(3)
+              << "[IMU] t=" << (sample.timestampUs / 1000.0) << " ms "
+              << "acc=(" << sample.ax << ", " << sample.ay << ", " << sample.az << ") m/s^2 "
+              << "gyro=(" << sample.gx << ", " << sample.gy << ", " << sample.gz << ") rad/s "
+              << "radial=" << sample.radialAccel << " m/s^2 "
+              << "omega=" << sample.omega << " rad/s "
+              << "m_corr=" << sample.correctiveMass_g << " g "
+              << "ang=" << sample.correctiveAngle_deg << " deg"
+              << std::endl;
+
+    std::cout.flags(oldFlags);
+    std::cout.precision(oldPrec);
 }
 
 // Representative controller for readbacks (tw_* side is fine for echo checks)
@@ -372,6 +391,24 @@ int main() {
                     case 202: system("xdotool search --name ProjectorVideo windowactivate --sync key space"); cout << "M202: Projector video PLAY/TOGGLE.\n"; break;
                     case 203: system("xdotool search --name ProjectorVideo windowactivate --sync key space"); cout << "M203: Projector video PAUSE/TOGGLE.\n"; break;
                     case 204: system("xdotool search --name ProjectorVideo windowactivate --sync key home");  cout << "M204: Projector video RESTART.\n"; break;
+                    case 210: {
+                        Esp32UART::ImuSample sample;
+                        if (uart.getImuSample(sample)) {
+                            print_imu_sample(sample);
+                        } else {
+                            cout << "[IMU] Failed to retrieve sample.\n";
+                        }
+                        break;
+                    }
+                    case 211: {
+                        cout << "M211: Requesting IMU calibration...\n";
+                        if (uart.requestImuCalibration()) {
+                            cout << "[IMU] Calibration complete.\n";
+                        } else {
+                            cout << "[IMU] Calibration failed or timed out.\n";
+                        }
+                        break;
+                    }
                     default:  cerr << "Unknown M" << mnum << "\n"; break;
                 }
                 continue;
