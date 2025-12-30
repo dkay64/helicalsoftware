@@ -34,6 +34,7 @@ Modern PyQt5-based tooling for the HeliCAL additive manufacturing platform. This
    - Demo Mode supplies packaged STL files so you can exercise the pipeline without real parts.
    - The GUI probes the Jetson via SSH on startup. Use the Connect/Disconnect buttons to manage the session manually.
    - The Pipeline tab saves projection PNGs, angle montages, toy G-code, and video previews under the chosen output folder.
+   - Upload MP4 projector assets from your workstation; the GUI copies them to the Jetson, starts playback, and mirrors the video on a dedicated “Video Monitor” tab.
    - End/stop sequences only send `M18 R T`, so the Z-axis motors stay energized even when prints are halted or the Jetson shuts down.
 
 ## Testing

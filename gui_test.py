@@ -27,12 +27,17 @@ import socket
 from queue import Queue, Empty
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread, QEvent, pyqtSlot
+import shlex
+from pathlib import Path, PurePosixPath
+
+from PyQt5.QtCore import Qt, QTimer, QObject, pyqtSignal, QThread, QEvent, pyqtSlot, QUrl
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTextEdit, QFileDialog, QCheckBox, QMessageBox,
     QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout, QComboBox, QDialog, QGridLayout
 )
+from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+from PyQt5.QtMultimediaWidgets import QVideoWidget
 import serial
 import vamtoolbox as vam
 from vamtoolbox.geometry import TargetGeometry, ProjectionGeometry, Sinogram, Reconstruction
@@ -140,6 +145,7 @@ class SSHCommandWorker(QObject):
     failed = pyqtSignal(str)
     auth_failed = pyqtSignal()
     connection_lost = pyqtSignal(str)
+    file_uploaded = pyqtSignal(str)
 
     def __init__(self, host, user, password, remote_dir):
         """Store connection info and prepare the compile command for the remote Jetson."""
@@ -170,6 +176,19 @@ class SSHCommandWorker(QObject):
         cmd = (command or "").strip()
         if cmd:
             self._commands.put(cmd)
+
+    @pyqtSlot(str, str)
+    def enqueue_upload(self, local_path: str, remote_path: str):
+        """Queue an upload request that will be handled via SFTP."""
+        if local_path and remote_path:
+            self._commands.put(("__upload__", local_path, remote_path))
+
+    @pyqtSlot(str, bool)
+    def enqueue_shell(self, command: str, needs_sudo: bool = False):
+        """Queue a shell command that should execute on the Jetson."""
+        cmd = (command or "").strip()
+        if cmd:
+            self._commands.put(("__shell__", cmd, needs_sudo))
 
     @pyqtSlot()
     def stop(self):
@@ -212,6 +231,16 @@ class SSHCommandWorker(QObject):
                     cmd = self._commands.get(timeout=0.2)
                 except Empty:
                     continue
+                if isinstance(cmd, tuple):
+                    tag = cmd[0]
+                    if tag == "__upload__":
+                        _, local_path, remote_path = cmd
+                        self._handle_upload(local_path, remote_path)
+                        continue
+                    if tag == "__shell__":
+                        _, shell_cmd, needs_sudo = cmd
+                        self._run_remote_command(shell_cmd, needs_sudo=needs_sudo)
+                        continue
                 if cmd == "__disconnect__":
                     break
                 self._send_line(cmd)
@@ -248,6 +277,27 @@ class SSHCommandWorker(QObject):
             stdin.close()
             stdout.close()
             stderr.close()
+
+    def _abs_remote_path(self, path: str) -> str:
+        if path.startswith("/"):
+            return path
+        clean = path.lstrip("./")
+        return f"/home/{self.user}/{clean}"
+
+    def _handle_upload(self, local_path: str, remote_path: str):
+        try:
+            abs_path = self._abs_remote_path(remote_path)
+            remote_dir = os.path.dirname(abs_path)
+            self._run_remote_command(f"mkdir -p {shlex.quote(remote_dir)}")
+            sftp = self._client.open_sftp()
+            try:
+                sftp.put(local_path, abs_path)
+            finally:
+                sftp.close()
+            self._emit_log(f"[UPLOAD] {local_path} -> {abs_path}")
+            self.file_uploaded.emit(abs_path)
+        except Exception as exc:
+            self._emit_log(f"[UPLOAD] Failed: {exc}")
 
     def _start_master_queue(self):
         """Launch master_queue in interactive mode so subsequent commands run live."""
@@ -389,6 +439,9 @@ class HeliCALQt(QMainWindow):
         self.txt_gcode_log = None
         self.le_jog_step = None
         self.le_jog_feed = None
+        self.le_video = None
+        self.remote_video_dir = f"{self.remote_dir}/Videos"
+        self.current_video_remote_path = ""
 
         self.counts_per_theta_rev = 245426
         self._last_enc_pos = None
@@ -422,6 +475,7 @@ class HeliCALQt(QMainWindow):
         self._build_tab_pipeline()
         self._build_tab_dc_encoder()
         self._build_tab_steppers()
+        self._build_tab_video_monitor()
 
         self.enc_timer = QTimer(self)
         self.enc_timer.setInterval(500)
@@ -551,6 +605,7 @@ class HeliCALQt(QMainWindow):
         self._ssh_worker.failed.connect(self._on_ssh_failed)
         self._ssh_worker.auth_failed.connect(self._on_ssh_auth_failed)
         self._ssh_worker.connection_lost.connect(self._on_ssh_connection_lost)
+        self._ssh_worker.file_uploaded.connect(self._on_remote_file_uploaded)
         self._ssh_thread.finished.connect(self._on_ssh_thread_finished)
         self._ssh_thread.finished.connect(self._ssh_thread.deleteLater)
         self._ssh_thread.start()
@@ -628,6 +683,18 @@ class HeliCALQt(QMainWindow):
         row1.addWidget(btn_browse_stl)
         v.addLayout(row1)
 
+        video_row = QHBoxLayout()
+        video_row.addWidget(QLabel("Video File (.mp4):"))
+        self.le_video = QLineEdit("")
+        video_row.addWidget(self.le_video, 1)
+        btn_browse_video = QPushButton("Browse")
+        btn_browse_video.clicked.connect(self._browse_video)
+        video_row.addWidget(btn_browse_video)
+        btn_upload_video = QPushButton("Upload")
+        btn_upload_video.clicked.connect(self._upload_video_clicked)
+        video_row.addWidget(btn_upload_video)
+        v.addLayout(video_row)
+
         self.cb_demo = QCheckBox("Demo Mode (use packaged ring/cube if file missing)")
         self.cb_demo.setChecked(True)
         v.addWidget(self.cb_demo)
@@ -694,6 +761,14 @@ class HeliCALQt(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Choose STL", "", "STL files (*.stl);;All files (*.*)")
         if path:
             self.le_stl.setText(path)
+            self._set_video_preview_source("")
+
+    def _browse_video(self):
+        """Allow the user to pick a local MP4 that will be uploaded to the Jetson."""
+        path, _ = QFileDialog.getOpenFileName(self, "Choose Video", "", "MP4 files (*.mp4)")
+        if path:
+            self.le_video.setText(path)
+            self._set_video_preview_source(path)
 
     def _browse_outdir(self):
         """Allow the operator to point the output directory at a convenient writable folder."""
@@ -701,11 +776,64 @@ class HeliCALQt(QMainWindow):
         if d:
             self.le_out.setText(d)
 
+    def _upload_video_clicked(self):
+        """Upload the selected MP4 to the Jetson and start playback."""
+        path = self.le_video.text().strip()
+        if not path:
+            QMessageBox.warning(self, "Video", "Select an MP4 file to upload.")
+            return
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "Video", "Video file does not exist.")
+            return
+        if not path.lower().endswith(".mp4"):
+            QMessageBox.warning(self, "Video", "Only MP4 videos are supported.")
+            return
+        if not self._ensure_remote_ready():
+            return
+        filename = os.path.basename(path)
+        remote_rel = PurePosixPath(self.remote_video_dir) / filename
+        self.current_video_remote_path = str(remote_rel)
+        self._append_log(f"[VIDEO] Uploading {filename} ...")
+        self._ssh_worker.enqueue_upload(path, str(remote_rel))
+        self._set_video_preview_source(path)
+
     def _save_cfg_clicked(self):
         """Collect the currently shown parameter values and pass them to the helper for persistence."""
         cfg = self._cfg_from_ui()
         _save_cfg(cfg)
         QMessageBox.information(self, "Saved", "Configuration saved.")
+
+    def _set_video_preview_source(self, path: str):
+        """Load the selected MP4 into the preview tab."""
+        if not path or not hasattr(self, "video_player"):
+            return
+        url = QUrl.fromLocalFile(path)
+        self.video_player.setMedia(QMediaContent(url))
+        self.video_player.pause()
+
+    def _on_remote_file_uploaded(self, remote_path: str):
+        """Start projector playback after the upload succeeds."""
+        self.current_video_remote_path = remote_path
+        self._append_log(f"[VIDEO] Uploaded to {remote_path}")
+        self._start_remote_video(remote_path)
+
+    def _start_remote_video(self, remote_path: str):
+        """Launch mpv/x-dotool on the Jetson to display the uploaded video."""
+        if not self._ensure_remote_ready():
+            return
+        commands = [
+            "pkill mpv || true",
+            (
+                f"DISPLAY=:0 nohup mpv --title=ProjectorVideo "
+                f"--pause --no-border --loop=inf --video-rotate=180 "
+                f"{shlex.quote(remote_path)} >/tmp/mpv.log 2>&1 &"
+            ),
+            "DISPLAY=:0 xdotool search --name ProjectorVideo windowmove 1920 0",
+            "DISPLAY=:0 xdotool search --name ProjectorVideo windowsize 2560 1600",
+            "DISPLAY=:0 xdotool search --name ProjectorVideo windowactivate --sync key f",
+        ]
+        for cmd in commands:
+            self._ssh_worker.enqueue_shell(cmd, False)
 
     def _cfg_from_ui(self):
         """Convert the GUI widgets into the dictionary structure consumed by the pipeline."""
@@ -1079,6 +1207,23 @@ class HeliCALQt(QMainWindow):
         layout.addWidget(self.txt_gcode_log, 1)
 
         self.tabs.addTab(tab, "G-Code")
+
+    def _build_tab_video_monitor(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        self.video_player = QMediaPlayer(self)
+        self.video_widget = QVideoWidget()
+        self.video_player.setVideoOutput(self.video_widget)
+        layout.addWidget(self.video_widget, 1)
+        controls = QHBoxLayout()
+        btn_preview_play = QPushButton("Play Preview")
+        btn_preview_play.clicked.connect(self.video_player.play)
+        btn_preview_pause = QPushButton("Pause Preview")
+        btn_preview_pause.clicked.connect(self.video_player.pause)
+        controls.addWidget(btn_preview_play)
+        controls.addWidget(btn_preview_pause)
+        layout.addLayout(controls)
+        self.tabs.addTab(tab, "Video Monitor")
 
     def _append_gcode_log(self, msg: str):
         """Append messages to the dedicated G-code console."""

@@ -1,5 +1,6 @@
 import sys
 import types
+import shlex
 from pathlib import Path
 
 import numpy as np
@@ -85,11 +86,21 @@ class DummySSHWorker:
     """Minimal stand-in that records commands so tests can assert the G-code strings."""
     def __init__(self):
         self.commands = []
+        self.uploads = []
+        self.shells = []
         self.stopped = False
 
     def enqueue_command(self, command):
         """Pretend to queue a command by storing it on the instance."""
         self.commands.append(command)
+
+    def enqueue_upload(self, local_path, remote_path):
+        """Record queued uploads for later assertions."""
+        self.uploads.append((local_path, remote_path))
+
+    def enqueue_shell(self, command, needs_sudo=False):
+        """Record shell commands and whether sudo was requested."""
+        self.shells.append((command, needs_sudo))
 
     def stop(self):
         """Mark the worker as stopped."""
@@ -502,6 +513,45 @@ def test_send_end_sequence_stops_machine(gui):
     gui._send_gcode_command = sent.append
     gui._send_end_sequence()
     assert sent == ["G33 A0", "G28", "M18 R T"]
+
+
+def test_upload_video_clicked_queues_upload(gui, tmp_path):
+    """Uploading a video should queue the transfer with the worker."""
+    video = tmp_path / "projector.mp4"
+    video.write_text("stub", encoding="utf-8")
+    gui.le_video.setText(str(video))
+    gui._upload_video_clicked()
+    assert gui._ssh_worker.uploads[-1] == (str(video), f"{gui.remote_dir}/Videos/{video.name}")
+    assert gui.current_video_remote_path.endswith(video.name)
+
+
+def test_upload_video_clicked_rejects_non_mp4(gui, tmp_path, dialog_spy):
+    """Only MP4 assets should be accepted for upload."""
+    video = tmp_path / "clip.mov"
+    video.write_text("stub", encoding="utf-8")
+    gui.le_video.setText(str(video))
+    gui._upload_video_clicked()
+    assert dialog_spy["warning"]
+    assert gui._ssh_worker.uploads == []
+
+
+def test_on_remote_file_uploaded_triggers_playback(gui):
+    """Once the remote upload finishes the GUI should queue playback shell commands."""
+    remote = "/home/jacob/Desktop/HeliCAL_Final/Videos/demo.mp4"
+    gui._on_remote_file_uploaded(remote)
+    expected_shells = [
+        "pkill mpv || true",
+        (
+            f"DISPLAY=:0 nohup mpv --title=ProjectorVideo --pause --no-border --loop=inf "
+            f"--video-rotate=180 {shlex.quote(remote)} >/tmp/mpv.log 2>&1 &"
+        ),
+        "DISPLAY=:0 xdotool search --name ProjectorVideo windowmove 1920 0",
+        "DISPLAY=:0 xdotool search --name ProjectorVideo windowsize 2560 1600",
+        "DISPLAY=:0 xdotool search --name ProjectorVideo windowactivate --sync key f",
+    ]
+    assert [cmd for cmd, _ in gui._ssh_worker.shells] == expected_shells
+    assert all(not needs_sudo for _, needs_sudo in gui._ssh_worker.shells)
+    assert gui.current_video_remote_path == remote
 
 
 def test_build_axis_command_for_sequence_handles_missing(gui):
