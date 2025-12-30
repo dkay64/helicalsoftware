@@ -438,6 +438,7 @@ class HeliCALQt(QMainWindow):
         self.le_terminal_input = None
         self.remote_video_dir = f"{self.remote_dir}/Videos"
         self.current_video_remote_path = ""
+        self._video_login_prompted = False
 
         self.tabs = QTabWidget()
         self.connection_indicator = QLabel()
@@ -798,6 +799,17 @@ class HeliCALQt(QMainWindow):
         self.video_player.setMedia(QMediaContent(url))
         self.video_player.pause()
 
+    def _on_video_error(self, error):
+        """Warn the user when Windows cannot decode the preview video."""
+        if error == QMediaPlayer.NoError:
+            return
+        QMessageBox.warning(
+            self,
+            "Video Preview Error",
+            "Windows could not decode the selected MP4. Install an H.264/AAC codec pack "
+            "(for example, K-Lite) or convert the file to a compatible format.",
+        )
+
     def _on_remote_file_uploaded(self, remote_path: str):
         """Start projector playback after the upload succeeds."""
         self.current_video_remote_path = remote_path
@@ -808,7 +820,18 @@ class HeliCALQt(QMainWindow):
         """Launch mpv/x-dotool on the Jetson to display the uploaded video."""
         if not self._ensure_remote_ready():
             return
+        if not self._video_login_prompted:
+            QMessageBox.information(
+                self,
+                "Unlock Jetson Desktop",
+                "Make sure the Jetson desktop is unlocked and visible on the projector. "
+                "If the login screen is active, the video cannot appear.",
+            )
+            self._video_login_prompted = True
+        self._append_log("[VIDEO] Checking remote display availability ...")
         commands = [
+            "bash -lc 'if DISPLAY=:0 xset q >/dev/null 2>&1; "
+            "then echo \"[VIDEO] Display ready\"; else echo \"[VIDEO] Display locked. Log into the Jetson desktop.\"; fi'",
             "bash -lc 'pkill mpv >/dev/null 2>&1 || true'",
             (
                 "bash -lc 'DISPLAY=:0 nohup mpv --title=ProjectorVideo "
@@ -1100,6 +1123,7 @@ class HeliCALQt(QMainWindow):
         self.video_player = QMediaPlayer(self)
         self.video_widget = QVideoWidget()
         self.video_player.setVideoOutput(self.video_widget)
+        self.video_player.error.connect(self._on_video_error)
         layout.addWidget(self.video_widget, 1)
         controls = QHBoxLayout()
         btn_preview_play = QPushButton("Play Preview")
