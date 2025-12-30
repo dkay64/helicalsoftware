@@ -435,6 +435,7 @@ class HeliCALQt(QMainWindow):
         self.le_jog_step = None
         self.le_jog_feed = None
         self.le_video = None
+        self.le_terminal_input = None
         self.remote_video_dir = f"{self.remote_dir}/Videos"
         self.current_video_remote_path = ""
 
@@ -808,15 +809,15 @@ class HeliCALQt(QMainWindow):
         if not self._ensure_remote_ready():
             return
         commands = [
-            "pkill mpv || true",
+            "bash -lc 'pkill mpv >/dev/null 2>&1 || true'",
             (
-                f"DISPLAY=:0 nohup mpv --title=ProjectorVideo "
-                f"--pause --no-border --loop=inf --video-rotate=180 "
-                f"{shlex.quote(remote_path)} >/tmp/mpv.log 2>&1 &"
+                "bash -lc 'DISPLAY=:0 nohup mpv --title=ProjectorVideo "
+                "--pause --no-border --loop=inf --video-rotate=180 "
+                f"{shlex.quote(remote_path)} >/tmp/mpv.log 2>&1 & sleep 0.5'"
             ),
-            "DISPLAY=:0 xdotool search --name ProjectorVideo windowmove 1920 0",
-            "DISPLAY=:0 xdotool search --name ProjectorVideo windowsize 2560 1600",
-            "DISPLAY=:0 xdotool search --name ProjectorVideo windowactivate --sync key f",
+            "bash -lc 'DISPLAY=:0 xdotool search --name ProjectorVideo windowmove 1920 0 || true'",
+            "bash -lc 'DISPLAY=:0 xdotool search --name ProjectorVideo windowsize 2560 1600 || true'",
+            "bash -lc \"DISPLAY=:0 xdotool search --name ProjectorVideo windowactivate --sync key f || true\"",
         ]
         for cmd in commands:
             self._ssh_worker.enqueue_shell(cmd, False)
@@ -1083,6 +1084,14 @@ class HeliCALQt(QMainWindow):
         layout.addLayout(log_header)
         layout.addWidget(self.txt_gcode_log, 1)
 
+        input_row = QHBoxLayout()
+        self.le_terminal_input = QLineEdit()
+        self.le_terminal_input.setPlaceholderText("Type command (e.g., G0 R10) and press Enter")
+        self.le_terminal_input.returnPressed.connect(self._handle_terminal_input)
+        input_row.addWidget(QLabel("Console Input:"))
+        input_row.addWidget(self.le_terminal_input, 1)
+        layout.addLayout(input_row)
+
         self.tabs.addTab(tab, "G-Code")
 
     def _build_tab_video_monitor(self):
@@ -1207,6 +1216,16 @@ class HeliCALQt(QMainWindow):
         """Send the M205 command that adjusts LED current on the Jetson."""
         value = int(self.sb_led_current.value()) if self.sb_led_current else 0
         self._send_gcode_command(f"M205 S{value}")
+
+    def _handle_terminal_input(self):
+        """Handle Enter presses in the console input line."""
+        if not self.le_terminal_input:
+            return
+        cmd = self.le_terminal_input.text().strip()
+        if not cmd:
+            return
+        self._send_gcode_command(cmd)
+        self.le_terminal_input.clear()
 
     def _send_start_sequence(self):
         """Send the standard startup script (motors on, home, move, zero, spin start, wait)."""

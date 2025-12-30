@@ -475,6 +475,16 @@ def test_send_led_current_uses_spinbox_value(gui):
     assert sent == ["M205 S123"]
 
 
+def test_console_input_sends_entered_command(gui):
+    """Typing into the console input line should dispatch commands."""
+    sent = []
+    gui._send_gcode_command = sent.append
+    gui.le_terminal_input.setText("G0 R5")
+    gui._handle_terminal_input()
+    assert sent == ["G0 R5"]
+    assert gui.le_terminal_input.text() == ""
+
+
 def test_upload_video_clicked_queues_upload(gui, tmp_path):
     """Uploading a video should queue the transfer with the worker."""
     video = tmp_path / "projector.mp4"

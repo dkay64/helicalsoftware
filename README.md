@@ -36,6 +36,7 @@ Modern PyQt5-based tooling for the HeliCAL additive manufacturing platform. This
 - The Pipeline tab saves projection PNGs, angle montages, toy G-code, and video previews under the chosen output folder.
 - Upload MP4 projector assets from your workstation; the GUI copies them to the Jetson, starts playback, and mirrors the video on a dedicated "Video Monitor" tab.
 - The G-code tab now includes a “Set LED Current” control that issues `M205 S###` so you can adjust projector current (0–30000 mA) after homing without rebuilding firmware.
+- The console panel accepts typed commands via its new input line so you can interact with the Jetson as if it were a terminal.
 - End/stop sequences only send `M18 R T`, so the Z-axis motors stay energized even when prints are halted or the Jetson shuts down.
 
 ## Testing
