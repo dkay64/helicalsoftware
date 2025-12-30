@@ -24,7 +24,6 @@ import sys
 import os
 import time
 import socket
-import threading
 from queue import Queue, Empty
 from pathlib import Path
 
@@ -440,7 +439,6 @@ class HeliCALQt(QMainWindow):
         self.remote_video_dir = f"{self.remote_dir}/Videos"
         self.current_video_remote_path = ""
         self._video_login_prompted = False
-        self._ssh_password = ""
 
         self.tabs = QTabWidget()
         self.connection_indicator = QLabel()
@@ -586,7 +584,6 @@ class HeliCALQt(QMainWindow):
         """Spin up a QThread that runs SSHCommandWorker with the provided password."""
         if self._ssh_thread and self._ssh_thread.isRunning():
             self._shutdown_ssh_worker()
-        self._ssh_password = password
         self._ssh_thread = QThread()
         self._ssh_worker = SSHCommandWorker(self.ssh_host, self.ssh_user, password, self.remote_dir)
         self._ssh_worker.moveToThread(self._ssh_thread)
@@ -605,6 +602,7 @@ class HeliCALQt(QMainWindow):
         """Stop the running SSH worker thread and wait for it to exit."""
         self._ssh_connecting = False
         self._update_connection_indicator()
+        self._reset_video_prompt()
         if self._ssh_worker:
             try:
                 self._ssh_worker.stop()
@@ -635,6 +633,7 @@ class HeliCALQt(QMainWindow):
         self._ssh_connecting = False
         self._ssh_connected = False
         self._update_connection_indicator()
+        self._reset_video_prompt()
         self._append_log(f"[SSH] Failure: {err}")
         self._show_connection_failed_message()
 
@@ -643,17 +642,24 @@ class HeliCALQt(QMainWindow):
         self._ssh_connecting = False
         self._ssh_connected = False
         self._update_connection_indicator()
+        self._reset_video_prompt()
         QMessageBox.warning(self, "Incorrect password!", "Incorrect password!\nPlease try again!")
+        QTimer.singleShot(0, self._prompt_remote_password)
 
     def _on_ssh_connection_lost(self, reason: str):
         """Reset the interface when the remote session drops unexpectedly."""
         self._ssh_connecting = False
         self._ssh_connected = False
         self._update_connection_indicator()
+        self._reset_video_prompt()
         self._append_log(f"[SSH] Connection lost: {reason}")
         QMessageBox.critical(self, "SSH Disconnected", f"Connection lost:\n{reason}\nUse Connect to retry.")
         # Allow a fresh manual reconnect without auto-prompt loops
         self._auto_bootstrap_started = False
+
+    def _reset_video_prompt(self):
+        """Allow the video helper to remind the user about the Jetson desktop state."""
+        self._video_login_prompted = False
 
     def _append_connection_log(self, msg: str):
         """Mirror SSH log messages into both the pipeline and G-code consoles."""
@@ -813,49 +819,6 @@ class HeliCALQt(QMainWindow):
             "(for example, K-Lite) or convert the file to a compatible format.",
         )
 
-    def _run_background_shell(self, commands):
-        """Execute shell commands on a separate SSH connection so the main session stays alive."""
-        if paramiko is None:
-            QMessageBox.warning(self, "SSH", "Paramiko is required to run remote commands.")
-            return
-        if not self._ssh_password:
-            QMessageBox.warning(self, "SSH", "Connect first to cache the SSH password.")
-            return
-        def _post_log(message):
-            QTimer.singleShot(0, lambda m=message: self._append_log(m))
-
-        def _worker():
-            client = None
-            try:
-                client = paramiko.SSHClient()
-                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                client.connect(
-                    hostname=self.ssh_host,
-                    port=22,
-                    username=self.ssh_user,
-                    password=self._ssh_password,
-                    timeout=10,
-                    allow_agent=False,
-                    look_for_keys=False,
-                )
-                for cmd in commands:
-                    _post_log(f"[VIDEO] Running: {cmd}")
-                    stdin, stdout, stderr = client.exec_command(cmd)
-                    out = stdout.read().decode(errors="ignore").strip()
-                    err = stderr.read().decode(errors="ignore").strip()
-                    exit_status = stdout.channel.recv_exit_status()
-                    if out:
-                        _post_log(out)
-                    if err:
-                        _post_log(f"[VIDEO][stderr] {err}")
-                    if exit_status != 0:
-                        _post_log(f"[VIDEO] Command exited with {exit_status}")
-            except Exception as exc:
-                _post_log(f"[VIDEO] Remote shell error: {exc}")
-            finally:
-                if client:
-                    client.close()
-        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_remote_file_uploaded(self, remote_path: str):
         """Start projector playback after the upload succeeds."""
@@ -889,7 +852,8 @@ class HeliCALQt(QMainWindow):
             "bash -lc 'DISPLAY=:0 xdotool search --name ProjectorVideo windowsize 2560 1600 || true'",
             "bash -lc \"DISPLAY=:0 xdotool search --name ProjectorVideo windowactivate --sync key f || true\"",
         ]
-        self._run_background_shell(commands)
+        for cmd in commands:
+            self._ssh_worker.enqueue_shell(cmd, False)
 
     def _cfg_from_ui(self):
         """Convert the GUI widgets into the dictionary structure consumed by the pipeline."""
