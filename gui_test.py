@@ -1,27 +1,22 @@
 """
-gui_test.py
+HeliCAL Control Station
+=======================
 
-Purpose:
-  * Work backwards from OUTPUTS (images + G-code) without lab hardware.
-  * Flexible: accepts ANY .stl when available, OR falls back to built-in demo assets via vamtoolbox.resources.
-  * Outputs:
-      - Projection images (PNGs)
-      - Toy G-code from a thresholded reconstruction slice
-      - Status log + editable JSON config
-  * "Demo Mode" toggle guarantees a successful off-lab run.
+This module builds the PyQt-based desktop application that we can use in the lab to
+prepare projection data and drive the remote Jetson/ESP32 hardware from a single window.
+Key capabilities include:
 
-Changes vs previous:
-  - Added DEMO MODE (uses packaged demo STL, e.g., 'ring.stl', if user path is missing)
-  - Graceful file checks with helpful error messages
-  - Auto-tries vam.resources.load(<basename>) when a path is missing
-  - Saves an angle-sweep montage PNG
+* **Pipeline tab** – choose STL files (or demo assets), tweak reconstruction parameters,
+  and spawn a worker thread that generates projection PNGs, toy G-code, montages, and
+  preview videos via `pipeline_helpers`.
+* **DC Motor & Encoder tab** – connect to the ESP32 over UART, command RPM setpoints,
+  and display live encoder statistics.
+* **G-code tab** – issue canned macros (homing, jog, projector control), type custom
+  commands, and view a live console synchronized with SSH output.
+* **SSH automation** – password dialog, connection indicator, remote compilation of
+  `master_queue`, and queuing of every command coming from the GUI buttons.
 
-Dependencies:
-  - numpy, matplotlib
-  - vamtoolbox (ASTRA if available)
-
-Run:
-  python gui_test.py
+Run locally with `python gui_test.py` to bring up the interface.
 """
 
 
@@ -68,6 +63,7 @@ except ImportError:
 
 
 def _default_cfg():
+    """Return a baseline configuration dictionary loaded from pipeline helpers when available."""
     if pipeline and hasattr(pipeline, "load_config"):
         return pipeline.load_config()
     return {
@@ -83,12 +79,15 @@ def _default_cfg():
     }
 
 def _save_cfg(cfg: dict):
+    """Persist the configuration dictionary via pipeline helpers if they are present."""
     if pipeline and hasattr(pipeline, "save_config"):
         pipeline.save_config(cfg)
 
 
 class PasswordDialog(QDialog):
+    """Modal dialog that requests the Jetson password before issuing SSH commands."""
     def __init__(self, parent, user, host):
+        """Build the small password window with a masked input and confirmation button."""
         super().__init__(parent)
         self.setWindowTitle("Remote Login Required")
         self._password = ""
@@ -111,26 +110,31 @@ class PasswordDialog(QDialog):
         layout.addWidget(self.btn_enter)
 
     def eventFilter(self, obj, event):
+        """Suppress the default Return/Enter event on the password field so we can handle it ourselves."""
         if obj is self.le_password and event.type() == QEvent.KeyPress:
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
                 return True
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event):
+        """Prevent accidental dialog acceptance by ignoring Enter presses at the form level."""
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             event.ignore()
             return
         super().keyPressEvent(event)
 
     def _on_submit(self):
+        """Store the entered password when the Enter button is clicked."""
         self._password = self.le_password.text()
         self.accept()
 
     def password(self):
+        """Expose the cached password string to the caller."""
         return self._password
 
 
 class SSHCommandWorker(QObject):
+    """Background worker that connects over SSH, compiles master_queue, and streams commands/logs."""
     log = pyqtSignal(str)
     success = pyqtSignal()
     failed = pyqtSignal(str)
@@ -138,6 +142,7 @@ class SSHCommandWorker(QObject):
     connection_lost = pyqtSignal(str)
 
     def __init__(self, host, user, password, remote_dir):
+        """Store connection info and prepare the compile command for the remote Jetson."""
         super().__init__()
         self.host = host
         self.user = user
@@ -161,19 +166,23 @@ class SSHCommandWorker(QObject):
 
     @pyqtSlot(str)
     def enqueue_command(self, command: str):
+        """Queue a G-code style command that should be written to the remote shell."""
         cmd = (command or "").strip()
         if cmd:
             self._commands.put(cmd)
 
     @pyqtSlot()
     def stop(self):
+        """Signal the worker loop to exit and close the SSH session."""
         self._commands.put("__disconnect__")
 
     def _emit_log(self, message):
+        """Emit a timestamped log line so the GUI text consoles stay in sync."""
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         self.log.emit(f"[SSH] [{ts}] {message}")
 
     def run(self):
+        """Connect to the Jetson, compile master_queue, and service queued commands until stopped."""
         if paramiko is None:
             self.failed.emit("Paramiko is not installed. Install it to enable remote automation.")
             return
@@ -219,6 +228,7 @@ class SSHCommandWorker(QObject):
             self._cleanup()
 
     def _run_remote_command(self, command, needs_sudo=False):
+        """Execute a one-shot command (compile, etc.) and surface stdout/stderr to the GUI log."""
         self._emit_log(f"Running: {command}")
         stdin, stdout, stderr = self._client.exec_command(command, get_pty=needs_sudo)
         try:
@@ -240,6 +250,7 @@ class SSHCommandWorker(QObject):
             stderr.close()
 
     def _start_master_queue(self):
+        """Launch master_queue in interactive mode so subsequent commands run live."""
         self._emit_log("Launching master_queue (interactive).")
         self._stdin, self._stdout, self._stderr = self._client.exec_command(
             f"cd {self.remote_dir} && sudo -S ./master_queue",
@@ -250,6 +261,7 @@ class SSHCommandWorker(QObject):
         self._stdin.flush()
 
     def _pump_stdout(self):
+        """Read streamed output from master_queue and forward each non-empty line to the GUI."""
         if not self._channel:
             return
         try:
@@ -265,6 +277,7 @@ class SSHCommandWorker(QObject):
             raise
 
     def _send_line(self, command):
+        """Write a sanitized command to the remote stdin channel."""
         if not self._stdin:
             raise RuntimeError("Remote session not ready.")
         self._emit_log(f"> {command}")
@@ -272,6 +285,7 @@ class SSHCommandWorker(QObject):
         self._stdin.flush()
 
     def _cleanup(self):
+        """Close all SSH resources so the worker can exit cleanly."""
         try:
             if self._stdin:
                 try:
@@ -304,11 +318,13 @@ class SSHCommandWorker(QObject):
 
 
 class PipelineWorker(QObject):
+    """Worker thread that runs the voxelization / projection pipeline without freezing the GUI."""
     log = pyqtSignal(str)
     done = pyqtSignal(str)
     failed = pyqtSignal(str)
 
     def __init__(self, stl, out_dir, cfg, demo_mode):
+        """Record paths/config, then reuse the shared pipeline module when run() executes."""
         super().__init__()
         self.stl = stl
         self.out_dir = out_dir
@@ -316,10 +332,12 @@ class PipelineWorker(QObject):
         self.demo_mode = demo_mode
 
     def _emit_log(self, msg):
+        """Helper to emit plain pipeline log messages with timestamps."""
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         self.log.emit(f"[{ts}] {msg}")
 
     def run(self):
+        """Resolve the STL, run voxelization/projection, and save the derivative assets."""
         if not PIPELINE_OK:
             self.failed.emit("Pipeline helpers not available (gui_test.py import failed).")
             return
@@ -348,9 +366,11 @@ class PipelineWorker(QObject):
 
 
 class HeliCALQt(QMainWindow):
+    """Top-level window that groups the pipeline, encoder, and G-code tools for the control station."""
     def __init__(self):
+        """Set up UI widgets, timers, and background workers for the three application tabs."""
         super().__init__()
-        self.setWindowTitle("HeliCAL Control Panel")
+        self.setWindowTitle("HeliCAL Control Station")
         self.resize(980, 720)
 
         self.serial = None
@@ -415,15 +435,18 @@ class HeliCALQt(QMainWindow):
         QTimer.singleShot(750, self._initiate_connection)
 
     def _update_connection_indicator(self):
+        """Refresh the status dot/buttons so users instantly know if SSH is connected."""
         color = "#1f8bff" if self._ssh_connected else "#c22525"
         self.connection_indicator.setStyleSheet(
             f"background-color: {color}; border-radius: 9px; border: 1px solid #333;"
         )
-        self.btn_manual_connect.setEnabled(not self._ssh_connected and not self._ssh_connecting)
+        self.btn_manual_connect.setEnabled(not self._ssh_connecting)
         if self.btn_manual_disconnect:
             self.btn_manual_disconnect.setEnabled(self._ssh_connected)
 
     def _initiate_connection(self, manual=False):
+        """Start the SSH connection workflow, optionally triggered manually via the toolbar button."""
+        self._cleanup_finished_thread()
         if self._ssh_connected:
             if manual:
                 QMessageBox.information(self, "SSH", "Already connected to the Jetson.")
@@ -446,6 +469,7 @@ class HeliCALQt(QMainWindow):
         self._prompt_remote_password()
 
     def _probe_ssh_host(self):
+        """Quickly test whether the Jetson is reachable on port 22 before asking for a password."""
         try:
             with socket.create_connection((self.ssh_host, 22), timeout=3):
                 return True
@@ -454,6 +478,7 @@ class HeliCALQt(QMainWindow):
             return False
 
     def _show_connection_failed_message(self):
+        """Display a friendly reminder of the Wi-Fi credentials when the probe or login fails."""
         QMessageBox.critical(
             self,
             "Connection failed!",
@@ -462,6 +487,7 @@ class HeliCALQt(QMainWindow):
         )
 
     def _prompt_remote_password(self):
+        """Open the password dialog and kick off the SSH worker when the user submits credentials."""
         if self._password_dialog_open or self._ssh_connecting or self._ssh_connected:
             return
         self._password_dialog_open = True
@@ -478,7 +504,16 @@ class HeliCALQt(QMainWindow):
                 QMessageBox.warning(self, "Password Required", "Please enter a password to continue.")
                 QTimer.singleShot(0, self._prompt_remote_password)
 
+    def _cleanup_finished_thread(self):
+        """Release thread references when the SSH worker shuts down so a new session can start cleanly."""
+        if self._ssh_thread and not self._ssh_thread.isRunning():
+            self._ssh_thread = None
+            self._ssh_worker = None
+            self._ssh_connecting = False
+            self._update_connection_indicator()
+
     def _disconnect_clicked(self):
+        """Ask for confirmation then send a shutdown command to the Jetson over SSH."""
         if not self._ssh_connected or not self._ssh_worker:
             QMessageBox.information(self, "SSH", "System is not connected.")
             return
@@ -494,10 +529,17 @@ class HeliCALQt(QMainWindow):
         try:
             self._ssh_worker.enqueue_command("sudo shutdown now")
             self._ssh_worker.stop()
+            self._ssh_connected = False
+            self._ssh_connecting = False
+            self._auto_bootstrap_started = False
+            self._append_log("[SSH] Shutdown requested via GUI.")
+            self._append_gcode_log("[SSH] Shutdown requested via GUI.")
+            self._update_connection_indicator()
         except Exception as exc:
             QMessageBox.warning(self, "SSH", f"Failed to send shutdown: {exc}")
 
     def _launch_ssh_worker(self, password):
+        """Spin up a QThread that runs SSHCommandWorker with the provided password."""
         if self._ssh_thread and self._ssh_thread.isRunning():
             self._shutdown_ssh_worker()
         self._ssh_thread = QThread()
@@ -514,6 +556,7 @@ class HeliCALQt(QMainWindow):
         self._ssh_thread.start()
 
     def _shutdown_ssh_worker(self):
+        """Stop the running SSH worker thread and wait for it to exit."""
         self._ssh_connecting = False
         self._update_connection_indicator()
         if self._ssh_worker:
@@ -528,16 +571,21 @@ class HeliCALQt(QMainWindow):
             self._ssh_worker = None
 
     def _on_ssh_thread_finished(self):
+        """Reset state when the SSH worker thread reports it is done."""
+        self._ssh_connecting = False
+        self._update_connection_indicator()
         self._ssh_thread = None
         self._ssh_worker = None
 
     def _on_ssh_success(self):
+        """Mark the GUI as connected and celebrate with a simple confirmation dialog."""
         self._ssh_connecting = False
         self._ssh_connected = True
         self._update_connection_indicator()
         QMessageBox.information(self, "Connection Successful!", "Connection Successful!")
 
     def _on_ssh_failed(self, err):
+        """Handle failures that happen prior to authentication (e.g., compile failure or timeout)."""
         self._ssh_connecting = False
         self._ssh_connected = False
         self._update_connection_indicator()
@@ -545,12 +593,14 @@ class HeliCALQt(QMainWindow):
         self._show_connection_failed_message()
 
     def _on_ssh_auth_failed(self):
+        """Alert the operator when the password is incorrect so they can try again."""
         self._ssh_connecting = False
         self._ssh_connected = False
         self._update_connection_indicator()
         QMessageBox.warning(self, "Incorrect password!", "Incorrect password!\nPlease try again!")
 
     def _on_ssh_connection_lost(self, reason: str):
+        """Reset the interface when the remote session drops unexpectedly."""
         self._ssh_connecting = False
         self._ssh_connected = False
         self._update_connection_indicator()
@@ -560,11 +610,12 @@ class HeliCALQt(QMainWindow):
         self._auto_bootstrap_started = False
 
     def _append_connection_log(self, msg: str):
+        """Mirror SSH log messages into both the pipeline and G-code consoles."""
         self._append_log(msg)
         self._append_gcode_log(msg)
-        QTimer.singleShot(0, self._prompt_remote_password)
 
     def _build_tab_pipeline(self):
+        """Create the first tab that lets users pick STL files, tweak parameters, and run the pipeline."""
         tab = QWidget()
         v = QVBoxLayout(tab)
 
@@ -619,7 +670,7 @@ class HeliCALQt(QMainWindow):
         self.btn_run.clicked.connect(self._run_pipeline_clicked)
         row3.addWidget(self.btn_run)
 
-        self.btn_save_cfg = QPushButton("Save Config")
+        self.btn_save_cfg = QPushButton("Save Output")
         self.btn_save_cfg.clicked.connect(self._save_cfg_clicked)
         row3.addWidget(self.btn_save_cfg)
         v.addLayout(row3)
@@ -635,24 +686,29 @@ class HeliCALQt(QMainWindow):
         self.tabs.addTab(tab, "Pipeline")
 
     def _append_log(self, msg: str):
+        """Send a string to the pipeline status QTextEdit."""
         self.txt_log.append(msg)
 
     def _browse_stl(self):
+        """Open a file picker that lets the user choose an STL asset."""
         path, _ = QFileDialog.getOpenFileName(self, "Choose STL", "", "STL files (*.stl);;All files (*.*)")
         if path:
             self.le_stl.setText(path)
 
     def _browse_outdir(self):
+        """Allow the operator to point the output directory at a convenient writable folder."""
         d = QFileDialog.getExistingDirectory(self, "Choose Output Directory", self.le_out.text())
         if d:
             self.le_out.setText(d)
 
     def _save_cfg_clicked(self):
+        """Collect the currently shown parameter values and pass them to the helper for persistence."""
         cfg = self._cfg_from_ui()
         _save_cfg(cfg)
         QMessageBox.information(self, "Saved", "Configuration saved.")
 
     def _cfg_from_ui(self):
+        """Convert the GUI widgets into the dictionary structure consumed by the pipeline."""
         return {
             "resolution": int(self.sb_res.value()),
             "num_angles": int(self.sb_ang.value()),
@@ -666,6 +722,7 @@ class HeliCALQt(QMainWindow):
         }
 
     def _run_pipeline_clicked(self):
+        """Start the worker thread that handles voxelization/projection."""
         if not PIPELINE_OK:
             QMessageBox.critical(self, "Pipeline", "Pipeline helpers not available. Ensure gui_test.py is importable.")
             return
@@ -695,12 +752,15 @@ class HeliCALQt(QMainWindow):
         self._thread.start()
 
     def _on_pipeline_done(self, out_dir: str):
+        """Celebrate a completed pipeline run with a message box."""
         QMessageBox.information(self, "Done", f"Outputs saved to:\n{out_dir}")
 
     def _on_pipeline_failed(self, err: str):
+        """Surface worker exceptions to the user in a blocking dialog."""
         QMessageBox.critical(self, "Pipeline Error", err)
 
     def _build_tab_dc_encoder(self):
+        """Construct widgets for connecting to the ESP32, adjusting RPM, and polling encoder data."""
         tab = QWidget()
         v = QVBoxLayout(tab)
 
@@ -753,6 +813,7 @@ class HeliCALQt(QMainWindow):
         self.tabs.addTab(tab, "DC Motor & Encoder")
 
     def _connect_serial(self):
+        """Attempt to open the selected serial port and report success/failure."""
         try:
             port = self.le_port.text().strip()
             baud = int(self.le_baud.text().strip())
@@ -762,6 +823,7 @@ class HeliCALQt(QMainWindow):
             QMessageBox.critical(self, "Serial", f"Failed to open port: {e}")
 
     def _disconnect_serial(self):
+        """Close the serial port and clear the reference."""
         try:
             if self.serial and self.serial.is_open:
                 self.serial.close()
@@ -771,6 +833,7 @@ class HeliCALQt(QMainWindow):
         QMessageBox.information(self, "Serial", "Disconnected.")
 
     def _rpm_to_pps(self, rpm: float) -> int:
+        """Convert RPM into the raw pulses/sec format expected by the firmware."""
         try:
             self.counts_per_theta_rev = int(float(self.le_cpr.text().strip()))
         except Exception:
@@ -779,6 +842,7 @@ class HeliCALQt(QMainWindow):
         return int(round((rpm * self.counts_per_theta_rev) / 60.0))
 
     def _send_theta_velocity_rpm(self, stop=False):
+        """Send a velocity command to the ESP32, or issue a stop when requested."""
         if not self.serial or not self.serial.is_open:
             QMessageBox.warning(self, "UART", "Connect to ESP32 first.")
             return
@@ -794,6 +858,7 @@ class HeliCALQt(QMainWindow):
             QMessageBox.critical(self, "UART", f"Send failed: {e}")
 
     def _poll_encoder(self):
+        """Query the ESP32 for encoder stats and refresh the monitor labels."""
         if not self.serial or not self.serial.is_open:
             return
         try:
@@ -820,6 +885,7 @@ class HeliCALQt(QMainWindow):
             pass
 
     def _build_tab_steppers(self):
+        """Lay out the G-code tab: motion rows, flow control buttons, and the console."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
@@ -886,7 +952,7 @@ class HeliCALQt(QMainWindow):
 
         control_group = QGroupBox("Machine / Axis Control")
         control_layout = QGridLayout()
-        self.sb_g33_rpm = QSpinBox(); self.sb_g33_rpm.setRange(0, 5000); self.sb_g33_rpm.setValue(1000)
+        self.sb_g33_rpm = QSpinBox(); self.sb_g33_rpm.setRange(0, 5000); self.sb_g33_rpm.setValue(0); self.sb_g33_rpm.setKeyboardTracking(False)
         btn_g33 = QPushButton("G33 (A RPM)")
         btn_g33.clicked.connect(lambda: self._send_gcode_command(f"G33 A{self.sb_g33_rpm.value()}"))
         control_layout.addWidget(QLabel("A-axis RPM:"), 0, 0)
@@ -1015,16 +1081,19 @@ class HeliCALQt(QMainWindow):
         self.tabs.addTab(tab, "G-Code")
 
     def _append_gcode_log(self, msg: str):
+        """Append messages to the dedicated G-code console."""
         if hasattr(self, "txt_gcode_log") and self.txt_gcode_log:
             self.txt_gcode_log.append(msg)
 
     def _ensure_remote_ready(self) -> bool:
+        """Confirm that SSH is connected before sending potentially dangerous commands."""
         if not self._ssh_worker or not self._ssh_connected:
             QMessageBox.warning(self, "SSH", "Connect to the Jetson before sending G-code.")
             return False
         return True
 
     def _send_gcode_command(self, command: str):
+        """Write a cleaned command string to the SSH worker and mirror it locally."""
         command = command.strip()
         if not command:
             return
@@ -1037,6 +1106,7 @@ class HeliCALQt(QMainWindow):
             self._append_gcode_log(f"[LOCAL] Failed to queue command: {exc}")
 
     def _collect_feedrates(self):
+        """Gather any optional per-axis feedrates entered in the G1 section."""
         parts = []
         for prefix, widget in (("FR", self.le_g1_fr), ("FT", self.le_g1_ft), ("FZ", self.le_g1_fz)):
             val = widget.text().strip()
@@ -1045,6 +1115,7 @@ class HeliCALQt(QMainWindow):
         return parts
 
     def _send_axis_command(self, base, axis_widgets, extra_parts=None):
+        """Build a single-line motion command (G0/G1) from populated axis inputs."""
         parts = [base]
         for axis, widget in axis_widgets.items():
             val = widget.text().strip()
@@ -1058,19 +1129,23 @@ class HeliCALQt(QMainWindow):
         self._send_gcode_command(" ".join(parts))
 
     def _send_g4_wait(self):
+        """Send a pause command with the duration shown in the spin box."""
         seconds = self.sb_g4_wait.value()
         self._send_gcode_command(f"G4 P{seconds}")
 
     def _send_g92_zero(self):
+        """Zero the coordinate system for the currently selected axis."""
         axis = self.cb_g92_axis.currentText()
         self._send_gcode_command(f"G92 {axis}")
 
     def _send_custom_command(self):
+        """Pass through whatever the user typed into the custom command box."""
         cmd = self.le_custom_cmd.text()
         self._send_gcode_command(cmd)
         self.le_custom_cmd.clear()
 
     def _save_gcode_log(self):
+        """Prompt for a file and persist the G-code console text contents."""
         if not self.txt_gcode_log:
             return
         default_path = Path.home() / "gcode_output.txt"
@@ -1089,6 +1164,7 @@ class HeliCALQt(QMainWindow):
             QMessageBox.critical(self, "Save Failed", f"Could not save log: {exc}")
 
     def _send_jog(self, axis: str, direction: int):
+        """Issue a jog sequence (relative move followed by absolute restore) using the spin boxes."""
         if not self._ensure_remote_ready():
             return
         step = float(self.le_jog_step.value()) if self.le_jog_step else 0.0
@@ -1106,6 +1182,7 @@ class HeliCALQt(QMainWindow):
             self._send_gcode_command(cmd)
 
     def _send_start_sequence(self):
+        """Send the standard startup script (motors on, home, move, zero, spin start, wait)."""
         g0_cmd = self._build_axis_command_for_sequence()
         if not g0_cmd:
             QMessageBox.warning(self, "Start Sequence", "Provide at least one axis value in the G0 row for the start sequence.")
@@ -1122,11 +1199,13 @@ class HeliCALQt(QMainWindow):
             self._send_gcode_command(cmd)
 
     def _send_end_sequence(self):
+        """Send the standard shutdown script that stops motion and powers off motors."""
         commands = ["G33 A0", "G28", "M18"]
         for cmd in commands:
             self._send_gcode_command(cmd)
 
     def _build_axis_command_for_sequence(self):
+        """Translate the G0 axis inputs into a single line for the start-sequence macro."""
         axis_widgets = {"R": self.le_g0_r, "T": self.le_g0_t, "Z": self.le_g0_z}
         parts = ["G0"]
         for axis, widget in axis_widgets.items():
@@ -1138,11 +1217,13 @@ class HeliCALQt(QMainWindow):
         return " ".join(parts)
 
     def closeEvent(self, event):
+        """Ensure background workers are stopped when the window closes."""
         self._shutdown_ssh_worker()
         super().closeEvent(event)
 
 
 def main():
+    """Entry point for local testing so `python gui_test.py` brings up the GUI."""
     app = QApplication(sys.argv)
     w = HeliCALQt()
     w.show()

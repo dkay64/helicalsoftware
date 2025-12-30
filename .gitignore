@@ -1,0 +1,42 @@
+# Python bytecode and cache directories
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.env
+
+# Packaging / build artefacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# PyInstaller / Nuitka specs
+*.spec
+
+# Test and coverage artefacts
+.pytest_cache/
+.coverage
+coverage.xml
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# IDE / editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Generated outputs from the control station
+outputs/

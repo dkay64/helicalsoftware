@@ -1,3 +1,14 @@
+"""
+Pipeline Helpers
+================
+
+Pure-Python glue that powers the control station pipeline thread. These utilities perform
+STL path resolution (including demo assets), voxelization, sinogram generation, slice
+rendering, montage/video exports, and toy G-code creation without any GUI dependencies.
+
+Functions in this module are safe to call from worker threads, tests, or headless scripts.
+"""
+
 import os
 from typing import Optional
 
@@ -29,10 +40,12 @@ except Exception:
 
 
 def log(message: str):
+    """Tiny wrapper around print so GUI threads can swap the logging mechanism later."""
     print(message)
 
 
 def _sino_preview_2d(sino_array: np.ndarray) -> np.ndarray:
+    """Guarantee a 2D numpy array by slicing/reshaping common Sinogram layouts."""
     arr = np.asarray(sino_array)
     if arr.ndim == 2:
         return arr  # already 2D
@@ -96,6 +109,7 @@ def resolve_stl_path(user_path: Optional[str], demo_mode: bool) -> str:
 
 
 def voxelize_stl(stl_path: str, resolution: int) -> 'TargetGeometry':
+    """Run vamtoolbox voxelization for the desired STL so downstream helpers have a 3D array."""
     log(f"Voxelizing STL: {stl_path} @ resolution={resolution}")
     if TargetGeometry is None:
         raise ImportError("vamtoolbox.geometry.TargetGeometry not available")
@@ -104,6 +118,7 @@ def voxelize_stl(stl_path: str, resolution: int) -> 'TargetGeometry':
 
 
 def run_projection(tg: 'TargetGeometry', num_angles: int, ray_type: str) -> tuple[np.ndarray, 'Sinogram', 'Reconstruction']:
+    """Forward-project the target at several angles then reconstruct a preview volume."""
     angles = np.linspace(0, 360, num_angles, endpoint=False)
     if ProjectionGeometry is None:
         raise ImportError("vamtoolbox.geometry.ProjectionGeometry not available")
@@ -137,6 +152,7 @@ def run_projection(tg: 'TargetGeometry', num_angles: int, ray_type: str) -> tupl
 
 
 def save_projection_images(output_dir: str, sino: 'Sinogram', recon_array: np.ndarray):
+    """Persist PNGs that visualize the sinogram and a central reconstruction slice."""
     os.makedirs(output_dir, exist_ok=True)
     # --- Sinogram preview (always 2D) ---
     sino_img = _sino_preview_2d(sino.array)
@@ -173,6 +189,7 @@ def save_projection_images(output_dir: str, sino: 'Sinogram', recon_array: np.nd
 
 
 def save_angle_montage(output_dir: str, sino: 'Sinogram', n_cols: int = 10):
+    """Build a tiled PNG that samples the projection angles so demo users see motion."""
     os.makedirs(output_dir, exist_ok=True)
     data = np.asarray(sino.array)
 
@@ -230,6 +247,7 @@ def save_angle_montage(output_dir: str, sino: 'Sinogram', n_cols: int = 10):
 
 
 def gcode_from_slice(img: np.ndarray, cfg: dict) -> str:
+    """Scanline the boolean-ish slice into serpentine toolpaths and return a textual program."""
     thr = float(cfg["proj_threshold"])  # 0..1
     px = float(cfg["pixel_size_mm"])    # mm/pixel
     fr = int(cfg["feedrate"])          # mm/min
@@ -274,6 +292,7 @@ def gcode_from_slice(img: np.ndarray, cfg: dict) -> str:
 
 
 def write_gcode_from_recon_slice(output_dir: str, recon_array: np.ndarray, cfg: dict):
+    """Normalize a mid-volume slice, convert it to toy G-code, and write it under output_dir."""
     os.makedirs(output_dir, exist_ok=True)
     mid = recon_array.shape[2] // 2 if recon_array.ndim == 3 else 0
     sl = recon_array[:, :, mid] if recon_array.ndim == 3 else recon_array
