@@ -385,7 +385,7 @@ def test_disconnect_clicked_requests_shutdown(gui, dialog_spy):
     gui._ssh_connected = True
     gui._ssh_worker = DummySSHWorker()
     gui._disconnect_clicked()
-    assert gui._ssh_worker.commands[:2] == ["M18 Z", "sudo shutdown now"]
+    assert gui._ssh_worker.commands[0] == "sudo shutdown now"
     assert not gui._ssh_connected
 
 
@@ -501,24 +501,7 @@ def test_send_end_sequence_stops_machine(gui):
     sent = []
     gui._send_gcode_command = sent.append
     gui._send_end_sequence()
-    assert sent == ["G33 A0", "G28", "M18", "M18 Z"]
-
-
-def test_stop_z_axis_sends_command(gui):
-    """Z-axis stop helper should emit the M18 Z command when connected."""
-    sent = []
-    gui._send_gcode_command = sent.append
-    gui._stop_z_axis()
-    assert sent == ["M18 Z"]
-
-
-def test_on_ssh_connection_lost_triggers_z_stop(gui):
-    """Unexpected disconnects should invoke the Z-axis stop helper."""
-    sent = []
-    gui._send_gcode_command = sent.append
-    gui._on_ssh_connection_lost("boom")
-    assert sent and sent[0] == "M18 Z"
-    assert not gui._ssh_connected
+    assert sent == ["G33 A0", "G28", "M18 R T"]
 
 
 def test_build_axis_command_for_sequence_handles_missing(gui):

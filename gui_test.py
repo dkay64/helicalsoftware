@@ -527,7 +527,6 @@ class HeliCALQt(QMainWindow):
         if confirm != QMessageBox.Yes:
             return
         try:
-            self._stop_z_axis()
             self._ssh_worker.enqueue_command("sudo shutdown now")
             self._ssh_worker.stop()
             self._ssh_connected = False
@@ -602,7 +601,6 @@ class HeliCALQt(QMainWindow):
 
     def _on_ssh_connection_lost(self, reason: str):
         """Reset the interface when the remote session drops unexpectedly."""
-        self._stop_z_axis()
         self._ssh_connecting = False
         self._ssh_connected = False
         self._update_connection_indicator()
@@ -1202,16 +1200,9 @@ class HeliCALQt(QMainWindow):
 
     def _send_end_sequence(self):
         """Send the standard shutdown script that stops motion and powers off motors."""
-        commands = ["G33 A0", "G28", "M18"]
+        commands = ["G33 A0", "G28", "M18 R T"]
         for cmd in commands:
             self._send_gcode_command(cmd)
-        self._stop_z_axis()
-
-    def _stop_z_axis(self):
-        """Disable the Z-axis motors for safety."""
-        if not self._ssh_worker or not self._ssh_connected:
-            return
-        self._send_gcode_command("M18 Z")
 
     def _build_axis_command_for_sequence(self):
         """Translate the G0 axis inputs into a single line for the start-sequence macro."""
@@ -1227,7 +1218,6 @@ class HeliCALQt(QMainWindow):
 
     def closeEvent(self, event):
         """Ensure background workers are stopped when the window closes."""
-        self._stop_z_axis()
         self._shutdown_ssh_worker()
         super().closeEvent(event)
 

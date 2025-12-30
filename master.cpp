@@ -297,11 +297,35 @@ int main() {
         }
     };
 
+    auto disable_axis = [&](char axis) {
+        switch (axis) {
+            case 'R':
+                tic_tw_r.deenergize(); tic_cw_r.deenergize();
+                break;
+            case 'T':
+                tic_tw_t.deenergize(); tic_cw_t.deenergize();
+                break;
+            case 'Z':
+                tic_tw_z1.deenergize(); tic_tw_z2.deenergize();
+                tic_cw_z1.deenergize(); tic_cw_z2.deenergize();
+                break;
+            default:
+                break;
+        }
+    };
+
     auto motors_enable = [&](){
         for (auto* m : all){ m->energize(); }
     };
-    auto motors_disable = [&](){
-        for (auto* m : all){ m->deenergize(); }
+    auto motors_disable = [&](const std::vector<char>& axes = {}){
+        if (axes.empty()) {
+            disable_axis('R');
+            disable_axis('T');
+        } else {
+            for (char axis : axes) {
+                disable_axis(static_cast<char>(std::toupper(axis)));
+            }
+        }
         uart.setThetaVelocity(0);
     };
 
@@ -326,6 +350,19 @@ int main() {
         auto bail_if_abort = [&](){
             if (abort_requested()) throw runtime_error("EMERGENCY STOP");
         };
+        auto parse_axis_args = [&](istringstream& stream) {
+            vector<char> axes;
+            string token;
+            while (stream >> token) {
+                for (char ch : token) {
+                    ch = static_cast<char>(std::toupper(ch));
+                    if (ch == 'R' || ch == 'T' || ch == 'Z' || ch == 'A') {
+                        axes.push_back(ch);
+                    }
+                }
+            }
+            return axes;
+        };
 
         try {
             // ===== M-codes =====
@@ -333,10 +370,15 @@ int main() {
                 int mnum = stoi(head.substr(1));
                 switch (mnum) {
                     case 17: motors_enable(); cout << "M17: Motors enabled.\n"; break;
-                    case 18: motors_disable(); cout << "M18: Motors disabled.\n"; break;
+                    case 18: {
+                        auto axes = parse_axis_args(iss);
+                        motors_disable(axes);
+                        cout << "M18: Motors disabled.\n";
+                        break;
+                    }
                     case 112:
                         cout << "M112: EMERGENCY STOP.\n";
-                        motors_disable();
+                        motors_disable(std::vector<char>{'R','T','Z'});
                         dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
                         led.stop();
                         return 0;
