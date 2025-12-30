@@ -12,7 +12,7 @@ Test Suite for HeliCAL Control Station
 ======================================
 
 Comprehensive pytest coverage for the PyQt GUI and pipeline helper functions. The suite
-stubs out external dependencies (vamtoolbox, SSH, serial) so every button, dialog, and
+ stubs out external dependencies (vamtoolbox, SSH) so every button, dialog, and
 helper method can be validated. Run with:
 
     python -m pytest tests/test_gui_control_station.py
@@ -107,46 +107,6 @@ class DummySSHWorker:
         self.stopped = True
 
 
-class SerialRecorder:
-    """Stub serial port that captures writes and can return canned reads."""
-    def __init__(self, port="COM1", baudrate=115200, timeout=0.2):
-        self.port = port
-        self.baudrate = baudrate
-        self.timeout = timeout
-        self.is_open = True
-        self.written = bytearray()
-        self.reset_called = False
-        self._read_queue = []
-
-    def queue_read(self, payload: bytes):
-        """Push deterministic bytes that the next read() call should return."""
-        self._read_queue.append(payload)
-
-    def reset_input_buffer(self):
-        """Record that the GUI attempted to clear the RX FIFO."""
-        self.reset_called = True
-
-    def write(self, data):
-        """Capture bytes written by the GUI for later assertions."""
-        self.written.extend(data)
-
-    def flush(self):
-        """Simulate an instant flush operation."""
-        return
-
-    def read(self, size):
-        """Return queued data (or zeros) to mimic incoming encoder packets."""
-        if self._read_queue:
-            data = self._read_queue.pop(0)
-            if len(data) < size:
-                data = data + b"\x00" * (size - len(data))
-            return data[:size]
-        return b"\x00" * size
-
-    def close(self):
-        """Mark the port as closed."""
-        self.is_open = False
-
 
 @pytest.fixture(scope="session")
 def qt_app():
@@ -188,17 +148,8 @@ def dialog_spy(monkeypatch):
 
 @pytest.fixture
 def gui(qt_app, monkeypatch):
-    """Build a HeliCALQt window with fake serial and SSH workers for isolated testing."""
-    serial_instances = []
-
-    def _serial_factory(port, baudrate=0, timeout=0.2):
-        inst = SerialRecorder(port, baudrate, timeout)
-        serial_instances.append(inst)
-        return inst
-
-    monkeypatch.setattr(gui_test.serial, "Serial", _serial_factory)
+    """Build a HeliCALQt window with a fake SSH worker for isolated testing."""
     window = gui_test.HeliCALQt()
-    window._serial_instances = serial_instances
     window._ssh_worker = DummySSHWorker()
     window._ssh_connected = True
     window._update_connection_indicator()
@@ -515,6 +466,15 @@ def test_send_end_sequence_stops_machine(gui):
     assert sent == ["G33 A0", "G28", "M18 R T"]
 
 
+def test_send_led_current_uses_spinbox_value(gui):
+    """Setting the LED current should emit the new M205 command."""
+    sent = []
+    gui._send_gcode_command = sent.append
+    gui.sb_led_current.setValue(123)
+    gui._send_led_current()
+    assert sent == ["M205 S123"]
+
+
 def test_upload_video_clicked_queues_upload(gui, tmp_path):
     """Uploading a video should queue the transfer with the worker."""
     video = tmp_path / "projector.mp4"
@@ -570,96 +530,6 @@ def test_append_connection_log_updates_both_logs(gui):
     gui._append_connection_log("[SSH] test")
     assert "[SSH] test" in gui.txt_log.toPlainText()
     assert "[SSH] test" in gui.txt_gcode_log.toPlainText()
-
-
-def test_connect_serial_opens_configured_port(gui):
-    """Opening serial should construct a SerialRecorder with the requested settings."""
-    gui.le_port.setText("COM7")
-    gui.le_baud.setText("9600")
-    gui._connect_serial()
-    assert isinstance(gui.serial, SerialRecorder)
-    assert gui.serial.port == "COM7"
-    assert gui.serial.baudrate == 9600
-
-
-def test_connect_serial_handles_exception(gui, monkeypatch, dialog_spy):
-    """Serial open failures should report the exception."""
-    def failing_serial(*args, **kwargs):
-        raise RuntimeError("no port")
-
-    monkeypatch.setattr(gui_test.serial, "Serial", failing_serial)
-    gui._connect_serial()
-    assert dialog_spy["critical"]
-
-
-def test_disconnect_serial_closes_port(gui):
-    """Disconnecting should null the serial reference."""
-    gui.serial = SerialRecorder()
-    gui._disconnect_serial()
-    assert gui.serial is None
-
-
-def test_rpm_to_pps_respects_counts_field(gui):
-    """Count conversions should honor the counts-per-revolution textbox."""
-    gui.le_cpr.setText("120")
-    assert gui._rpm_to_pps(60.0) == 120
-
-
-def test_send_theta_velocity_rpm_requires_serial(gui, dialog_spy):
-    """Velocity commands must warn when no serial device is attached."""
-    gui.serial = None
-    gui._send_theta_velocity_rpm()
-    assert dialog_spy["warning"]
-
-
-def test_send_theta_velocity_rpm_writes_packet(gui):
-    """The RPM helper should send a packet with the translated pulses-per-second payload."""
-    gui.le_port.setText("COM9")
-    gui.le_baud.setText("57600")
-    gui.le_cpr.setText("60")
-    gui._connect_serial()
-    gui.dsb_rpm.setValue(30.0)
-    gui._send_theta_velocity_rpm()
-    expected_pps = (30 * 60) // 60
-    expected = bytearray([0x30, 0x01]) + int(expected_pps).to_bytes(4, "little", signed=True)
-    assert gui.serial.written.startswith(expected)
-
-
-def test_send_theta_velocity_rpm_stop_packet(gui):
-    """Requesting a stop should still send a packet with zero velocity."""
-    gui.serial = SerialRecorder()
-    gui.le_cpr.setText("120")
-    gui._send_theta_velocity_rpm(stop=True)
-    expected = bytearray([0x30, 0x01]) + (0).to_bytes(4, "little", signed=True)
-    assert gui.serial.written.startswith(expected)
-
-
-def test_poll_encoder_updates_labels(gui):
-    """Encoder polling should parse the packet and update the label text."""
-    gui.serial = SerialRecorder()
-    vals = [0, 0, 100, 0, 0]
-    payload = b"".join(int(v).to_bytes(4, "little", signed=True) for v in vals)
-    gui.serial.queue_read(payload)
-    gui.counts_per_theta_rev = 100
-    gui._last_enc_pos = 50
-    gui._last_enc_ts = gui_test.time.time() - 0.5
-    gui._poll_encoder()
-    assert gui.lbl_pos.text() == "100"
-    assert gui.lbl_velpps.text()
-    assert gui.lbl_velrpm.text()
-
-
-def test_poll_encoder_ignores_short_reads(gui):
-    """Short packets should be ignored without updating labels."""
-    gui.serial = SerialRecorder()
-    gui.lbl_pos.setText("unchanged")
-
-    def short_read(size):
-        return b"\x00" * 10
-
-    gui.serial.read = short_read
-    gui._poll_encoder()
-    assert gui.lbl_pos.text() == "unchanged"
 
 
 def test_pipeline_helper_resolve_stl_path_prefers_user_file(tmp_path):

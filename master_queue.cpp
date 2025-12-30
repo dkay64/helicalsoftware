@@ -470,6 +470,31 @@ int main() {
                             return 0; // This will exit the program
                         }
                         case 200: led.configure();led.current(450);dlp.configure(); cout << "M200: Projector ON (configured).\n"; break;
+                        case 205: {
+                            double current_ma = -1.0;
+                            string token;
+                            while (iss >> token) {
+                                if (token.empty()) continue;
+                                if (token[0] == 'S' || token[0] == 's') {
+                                    try {
+                                        current_ma = stod(token.substr(1));
+                                    } catch (...) {
+                                        current_ma = -1.0;
+                                    }
+                                }
+                            }
+                            if (current_ma < 0) {
+                                cout << "M205: Provide current via S parameter (e.g., M205 S450).\n";
+                                break;
+                            }
+                            if (current_ma > 30000) {
+                                cout << "M205: Requested " << current_ma << " mA exceeds 30000 mA limit.\n";
+                                break;
+                            }
+                            led.current(static_cast<int>(current_ma));
+                            cout << "M205: LED current set to " << static_cast<int>(current_ma) << " mA.\n";
+                            break;
+                        }
                         case 201: dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);led.stop(); cout << "M201: Projector OFF.\n"; break;
                         case 202: system("xdotool search --name ProjectorVideo windowactivate --sync key space"); cout << "M202: Projector video PLAY/TOGGLE.\n"; break;
                         case 203: system("xdotool search --name ProjectorVideo windowactivate --sync key space"); cout << "M203: Projector video PAUSE/TOGGLE.\n"; break;

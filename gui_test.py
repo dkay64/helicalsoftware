@@ -9,8 +9,8 @@ Key capabilities include:
 * **Pipeline tab** – choose STL files (or demo assets), tweak reconstruction parameters,
   and spawn a worker thread that generates projection PNGs, toy G-code, montages, and
   preview videos via `pipeline_helpers`.
-* **DC Motor & Encoder tab** – connect to the ESP32 over UART, command RPM setpoints,
-  and display live encoder statistics.
+* **Video Monitor tab** - preview projector MP4s locally, then mirror playback on the
+  Jetson after uploading through SSH.
 * **G-code tab** – issue canned macros (homing, jog, projector control), type custom
   commands, and view a live console synchronized with SSH output.
 * **SSH automation** – password dialog, connection indicator, remote compilation of
@@ -38,7 +38,6 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtMultimediaWidgets import QVideoWidget
-import serial
 import vamtoolbox as vam
 from vamtoolbox.geometry import TargetGeometry, ProjectionGeometry, Sinogram, Reconstruction
 import vamtoolbox.projector as projector_module
@@ -423,10 +422,6 @@ class HeliCALQt(QMainWindow):
         self.setWindowTitle("HeliCAL Control Station")
         self.resize(980, 720)
 
-        self.serial = None
-        self.port = "/dev/ttyTHS1"
-        self.baud = 115200
-
         self.ssh_host = "192.168.0.123"
         self.ssh_user = "jacob"
         self.remote_dir = "Desktop/HeliCAL_Final"
@@ -442,10 +437,6 @@ class HeliCALQt(QMainWindow):
         self.le_video = None
         self.remote_video_dir = f"{self.remote_dir}/Videos"
         self.current_video_remote_path = ""
-
-        self.counts_per_theta_rev = 245426
-        self._last_enc_pos = None
-        self._last_enc_ts = None
 
         self.tabs = QTabWidget()
         self.connection_indicator = QLabel()
@@ -473,13 +464,8 @@ class HeliCALQt(QMainWindow):
         self.setCentralWidget(central)
 
         self._build_tab_pipeline()
-        self._build_tab_dc_encoder()
         self._build_tab_steppers()
         self._build_tab_video_monitor()
-
-        self.enc_timer = QTimer(self)
-        self.enc_timer.setInterval(500)
-        self.enc_timer.timeout.connect(self._poll_encoder)
 
         self._thread = None
         self._worker = None
@@ -887,131 +873,6 @@ class HeliCALQt(QMainWindow):
         """Surface worker exceptions to the user in a blocking dialog."""
         QMessageBox.critical(self, "Pipeline Error", err)
 
-    def _build_tab_dc_encoder(self):
-        """Construct widgets for connecting to the ESP32, adjusting RPM, and polling encoder data."""
-        tab = QWidget()
-        v = QVBoxLayout(tab)
-
-        ser_row = QHBoxLayout()
-        self.le_port = QLineEdit(self.port)
-        self.le_baud = QLineEdit(str(self.baud))
-        btn_conn = QPushButton("Connect")
-        btn_conn.clicked.connect(self._connect_serial)
-        btn_disc = QPushButton("Disconnect")
-        btn_disc.clicked.connect(self._disconnect_serial)
-        ser_row.addWidget(QLabel("Port:")); ser_row.addWidget(self.le_port)
-        ser_row.addWidget(QLabel("Baud:")); ser_row.addWidget(self.le_baud)
-        ser_row.addWidget(btn_conn); ser_row.addWidget(btn_disc)
-        v.addLayout(ser_row)
-
-        c_row = QHBoxLayout()
-        self.le_cpr = QLineEdit(str(self.counts_per_theta_rev))
-        c_row.addWidget(QLabel("Counts per θ-rev:"))
-        c_row.addWidget(self.le_cpr)
-        v.addLayout(c_row)
-
-        rpm_row = QHBoxLayout()
-        self.dsb_rpm = QDoubleSpinBox(); self.dsb_rpm.setRange(-2000.0, 2000.0); self.dsb_rpm.setDecimals(2); self.dsb_rpm.setValue(9.0)
-        btn_set = QPushButton("Set Velocity")
-        btn_set.clicked.connect(self._send_theta_velocity_rpm)
-        btn_stop = QPushButton("Stop (0 rpm)")
-        btn_stop.clicked.connect(lambda: self._send_theta_velocity_rpm(stop=True))
-        rpm_row.addWidget(QLabel("RPM:")); rpm_row.addWidget(self.dsb_rpm); rpm_row.addWidget(btn_set); rpm_row.addWidget(btn_stop)
-        v.addLayout(rpm_row)
-
-        mon_group = QGroupBox("Encoder Monitor (2 Hz)")
-        form = QFormLayout()
-        self.lbl_pos = QLabel("—")
-        self.lbl_velpps = QLabel("—")
-        self.lbl_velrpm = QLabel("—")
-        form.addRow("Position (counts)", self.lbl_pos)
-        form.addRow("Velocity (pulses/s)", self.lbl_velpps)
-        form.addRow("Velocity (rpm)", self.lbl_velrpm)
-        mon_group.setLayout(form)
-        v.addWidget(mon_group)
-
-        poll_row = QHBoxLayout()
-        btn_poll_on = QPushButton("Start Poll")
-        btn_poll_on.clicked.connect(lambda: self.enc_timer.start())
-        btn_poll_off = QPushButton("Stop Poll")
-        btn_poll_off.clicked.connect(lambda: self.enc_timer.stop())
-        poll_row.addWidget(btn_poll_on); poll_row.addWidget(btn_poll_off)
-        v.addLayout(poll_row)
-
-        self.tabs.addTab(tab, "DC Motor & Encoder")
-
-    def _connect_serial(self):
-        """Attempt to open the selected serial port and report success/failure."""
-        try:
-            port = self.le_port.text().strip()
-            baud = int(self.le_baud.text().strip())
-            self.serial = serial.Serial(port, baudrate=baud, timeout=0.2)
-            QMessageBox.information(self, "Serial", f"Connected to {port}")
-        except Exception as e:
-            QMessageBox.critical(self, "Serial", f"Failed to open port: {e}")
-
-    def _disconnect_serial(self):
-        """Close the serial port and clear the reference."""
-        try:
-            if self.serial and self.serial.is_open:
-                self.serial.close()
-        except Exception:
-            pass
-        self.serial = None
-        QMessageBox.information(self, "Serial", "Disconnected.")
-
-    def _rpm_to_pps(self, rpm: float) -> int:
-        """Convert RPM into the raw pulses/sec format expected by the firmware."""
-        try:
-            self.counts_per_theta_rev = int(float(self.le_cpr.text().strip()))
-        except Exception:
-            self.counts_per_theta_rev = 245426
-            self.le_cpr.setText(str(self.counts_per_theta_rev))
-        return int(round((rpm * self.counts_per_theta_rev) / 60.0))
-
-    def _send_theta_velocity_rpm(self, stop=False):
-        """Send a velocity command to the ESP32, or issue a stop when requested."""
-        if not self.serial or not self.serial.is_open:
-            QMessageBox.warning(self, "UART", "Connect to ESP32 first.")
-            return
-        rpm = 0.0 if stop else float(self.dsb_rpm.value())
-        pps = self._rpm_to_pps(rpm)
-        packet = bytearray([0x30, 0x01]) + int(pps).to_bytes(4, "little", signed=True)
-        try:
-            self.serial.reset_input_buffer()
-            self.serial.write(packet)
-            self.serial.flush()
-            _ = self.serial.read(1)
-        except Exception as e:
-            QMessageBox.critical(self, "UART", f"Send failed: {e}")
-
-    def _poll_encoder(self):
-        """Query the ESP32 for encoder stats and refresh the monitor labels."""
-        if not self.serial or not self.serial.is_open:
-            return
-        try:
-            pkt = bytearray([0x10, 0xFF, 0, 0, 0, 0])
-            self.serial.write(pkt)
-            self.serial.flush()
-            raw = self.serial.read(20)
-            if len(raw) != 20:
-                return
-            vals = [int.from_bytes(raw[i:i+4], "little", signed=True) for i in range(0, 20, 4)]
-            theta_pos = vals[2]
-            now = time.time()
-            self.lbl_pos.setText(str(theta_pos))
-            if self._last_enc_pos is not None and self._last_enc_ts is not None:
-                dt = max(1e-6, now - self._last_enc_ts)
-                dcounts = theta_pos - self._last_enc_pos
-                pps = dcounts / dt
-                rpm = (pps * 60.0) / max(1, self.counts_per_theta_rev)
-                self.lbl_velpps.setText(f"{pps:.1f}")
-                self.lbl_velrpm.setText(f"{rpm:.3f}")
-            self._last_enc_pos = theta_pos
-            self._last_enc_ts = now
-        except Exception:
-            pass
-
     def _build_tab_steppers(self):
         """Lay out the G-code tab: motion rows, flow control buttons, and the console."""
         tab = QWidget()
@@ -1126,7 +987,8 @@ class HeliCALQt(QMainWindow):
         layout.addWidget(control_group)
 
         projector_group = QGroupBox("Projector Control")
-        proj_layout = QHBoxLayout()
+        proj_layout = QVBoxLayout()
+        btn_row = QHBoxLayout()
         proj_cmds = [
             ("M200 On", "M200"),
             ("M201 Off", "M201"),
@@ -1137,7 +999,22 @@ class HeliCALQt(QMainWindow):
         for label_text, cmd in proj_cmds:
             btn = QPushButton(label_text)
             btn.clicked.connect(lambda checked=False, c=cmd: self._send_gcode_command(c))
-            proj_layout.addWidget(btn)
+            btn_row.addWidget(btn)
+        proj_layout.addLayout(btn_row)
+
+        current_row = QHBoxLayout()
+        self.sb_led_current = QSpinBox()
+        self.sb_led_current.setRange(0, 30000)
+        self.sb_led_current.setValue(450)
+        self.sb_led_current.setSuffix(" mA")
+        btn_set_led = QPushButton("Set LED Current")
+        btn_set_led.clicked.connect(self._send_led_current)
+        current_row.addWidget(QLabel("LED Current:"))
+        current_row.addWidget(self.sb_led_current)
+        current_row.addWidget(btn_set_led)
+        current_row.addStretch(1)
+        proj_layout.addLayout(current_row)
+
         projector_group.setLayout(proj_layout)
         layout.addWidget(projector_group)
 
@@ -1325,6 +1202,11 @@ class HeliCALQt(QMainWindow):
         ]
         for cmd in commands:
             self._send_gcode_command(cmd)
+
+    def _send_led_current(self):
+        """Send the M205 command that adjusts LED current on the Jetson."""
+        value = int(self.sb_led_current.value()) if self.sb_led_current else 0
+        self._send_gcode_command(f"M205 S{value}")
 
     def _send_start_sequence(self):
         """Send the standard startup script (motors on, home, move, zero, spin start, wait)."""

@@ -4,9 +4,9 @@ Modern PyQt5-based tooling for the HeliCAL additive manufacturing platform. This
 
 ## Repository Overview
 
-- `gui_test.py` – Primary application with three tabs (Pipeline, DC Motor & Encoder, G-Code) plus SSH automation to a Jetson target.
+- `gui_test.py` - Primary application with tabs for the pipeline, G-code console, and video monitor, plus SSH automation to a Jetson target.
 - `pipeline_helpers.py` – Headless helpers that resolve STL paths, run voxelization via `vamtoolbox`, export sinograms/montages/videos, and emit toy G-code.
-- `tests/test_gui_control_station.py` – Pytest suite that mocks SSH, serial, vamtoolbox, and projector dependencies so the control station can be regression-tested on any laptop.
+- `tests/test_gui_control_station.py` – Pytest suite that mocks SSH, vamtoolbox, and projector dependencies so the control station can be regression-tested on any laptop.
 - `gen_toy_pipeline.py`, `translate_crop_multipass.py`, etc. – Development scripts for generating sample data.
 - `LEAP/` – Vendor CT reconstruction demos and build scripts; referenced but not required to run the GUI.
 - `build/`, `dist/`, `outputs/` – Generated artifacts (ignored by Git). If you produce new executables, keep them out of commits or store them with Git LFS.
@@ -33,9 +33,10 @@ Modern PyQt5-based tooling for the HeliCAL additive manufacturing platform. This
 
    - Demo Mode supplies packaged STL files so you can exercise the pipeline without real parts.
    - The GUI probes the Jetson via SSH on startup. Use the Connect/Disconnect buttons to manage the session manually.
-   - The Pipeline tab saves projection PNGs, angle montages, toy G-code, and video previews under the chosen output folder.
-   - Upload MP4 projector assets from your workstation; the GUI copies them to the Jetson, starts playback, and mirrors the video on a dedicated “Video Monitor” tab.
-   - End/stop sequences only send `M18 R T`, so the Z-axis motors stay energized even when prints are halted or the Jetson shuts down.
+- The Pipeline tab saves projection PNGs, angle montages, toy G-code, and video previews under the chosen output folder.
+- Upload MP4 projector assets from your workstation; the GUI copies them to the Jetson, starts playback, and mirrors the video on a dedicated "Video Monitor" tab.
+- The G-code tab now includes a “Set LED Current” control that issues `M205 S###` so you can adjust projector current (0–30000 mA) after homing without rebuilding firmware.
+- End/stop sequences only send `M18 R T`, so the Z-axis motors stay energized even when prints are halted or the Jetson shuts down.
 
 ## Testing
 
