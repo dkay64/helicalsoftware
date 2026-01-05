@@ -1,0 +1,26 @@
+name: vam_env
+channels:
+  - vamtoolbox
+  - conda-forge
+  - astra-toolbox
+  - defaults
+dependencies:
+  - python=3.9.11
+  - vamtoolbox
+  - pip
+  - pip:
+      - imageio
+      - matplotlib
+      - numba
+      - numpy
+      - opencv-python
+      - paramiko
+      - pybind11
+      - PyQt5
+      - pyserial
+      - pytest
+      - scipy
+      - sphinx_rtd_theme
+      - torch
+      - tqdm
+      - trimesh
