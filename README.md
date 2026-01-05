@@ -44,9 +44,9 @@ python gui_test.py
 ```
 
 - **Connection workflow** – The GUI probes SSH automatically on launch. When you click **Connect** it prompts for the Jetson password; failed attempts immediately reprompt. Disconnecting or losing the link resets the cached state so you can reconnect without restarting the app.
-- **Pipeline tab** – Choose an STL (or enable Demo Mode), configure reconstruction parameters, and run the worker thread. Outputs include `sinogram_view.png`, `reconstruction_slice.png`, `angle_montage.png`, `toy_exposure.gcode`, and `reconstruction_preview.mp4` in the selected output directory.
-- **G-code tab** – Issue standard motions (`G0/G1/G4/G5/G6`), jog axes, control the projector (`M200`–`M204`), and run sequences. The LED current section sends `M205 S<value>`, while the “Console Input” textbox treats anything you type as a live G/M-code command.
-- **Video Monitor tab** – Browse for an MP4 and click **Upload**. The GUI copies the file to `~/Desktop/HeliCAL_Final/Videos`, checks whether the Jetson display is unlocked, then launches mpv/xlotool commands over SSH. Playback uses GPU acceleration and the projector window is positioned automatically. The tab also plays the file locally using PyQt’s media widgets (hence the codec requirement).
+- **Pipeline tab** – A simple form with STL/video pickers, demo mode toggle, output directory selector, and labeled parameter inputs (resolution, number of angles, threshold, pixel size, feed rate, laser PWM, dwell, ray type). The log pane at the bottom mirrors SSH and pipeline events so you can confirm progress.
+- **G-code tab** – Motion rows for G0/G1, dedicated controls for pauses (`G4`–`G6`), machine/axis macros, projector buttons (`M200`–`M204`), LED current spin box (sends `M205 S###`), start/end sequences, jog controls, and a “Console Input” textbox for free-form commands.
+- **Video Monitor tab** – A blank canvas until a preview is loaded. The bottom buttons allow playing/pausing the local preview, while the Upload button on the Pipeline tab handles remote projector playback.
 - **Logging** – SSH logs appear in both the pipeline status window and the G-code console so you can correlate remote output with local commands.
 
 ## Testing
