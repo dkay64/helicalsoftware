@@ -1,79 +1,87 @@
 # HeliCAL Software Suite
 
-Modern PyQt5-based tooling for the HeliCAL additive manufacturing platform. This repository bundles the GUI control station, the pipeline helpers that voxelize/forward-project STL assets, test harnesses that mock lab hardware, and historical LEAP resources.
+Modern PyQt5-based tooling for the HeliCAL additive manufacturing platform. The repository bundles the desktop control station, the projection/pipeline helpers, regression tests that stub all lab hardware, and legacy LEAP demos.
 
-## Repository Overview
+## Highlights
 
-- `gui_test.py` - Primary application with tabs for the pipeline, G-code console, and video monitor, plus SSH automation to a Jetson target.
-- `pipeline_helpers.py` – Headless helpers that resolve STL paths, run voxelization via `vamtoolbox`, export sinograms/montages/videos, and emit toy G-code.
-- `tests/test_gui_control_station.py` – Pytest suite that mocks SSH, vamtoolbox, and projector dependencies so the control station can be regression-tested on any laptop.
-- `gen_toy_pipeline.py`, `translate_crop_multipass.py`, etc. – Development scripts for generating sample data.
-- `LEAP/` – Vendor CT reconstruction demos and build scripts; referenced but not required to run the GUI.
-- `build/`, `dist/`, `outputs/` – Generated artifacts (ignored by Git). If you produce new executables, keep them out of commits or store them with Git LFS.
+- **Single-window control station** – Pipeline, G-code, and Video Monitor tabs share one SSH connection to the Jetson target.
+- **Remote automation** – Password prompts, connection indicators, and log mirroring keep the Jetson session in sync with the GUI. The prompt reappears automatically if you mistype the password.
+- **Projector workflow** – Upload a local MP4, mirror playback on the Jetson (mpv with GPU acceleration + xdotool window controls), and preview the file locally.
+- **Safety & convenience tools** – Set LED current via the new `M205 S###` helper, type commands directly into the console textbox, jog axes, and run canned start/end sequences.
+- **Headless pipeline** – `pipeline_helpers.py` resolves STLs (demo assets included), voxelizes with `vamtoolbox`, saves sinograms/montages/G-code, and produces video previews.
 
-## Getting Started
+## Prerequisites
+
+### Python
+- Python 3.9 (matching the lab environment) and pip.
+- Install Python dependencies with `pip install -r requirements.txt`. The list covers the GUI, pipeline helpers, pytest suite, and the heavier LEAP demos (PyTorch, TIGRE, etc.).
+
+### Remote Jetson / Linux target
+- g++ toolchain plus the HeliCAL sources checked out in `~/Desktop/HeliCAL_Final`.
+- [`mpv`](https://mpv.io/) and `xdotool` available on `$PATH` (used for projector playback). The GUI launches mpv with `--vo=gpu --hwdec=auto`, so make sure GPU drivers support those flags.
+- Desktop session must be unlocked when you want projector playback; the GUI will remind you if the display is locked.
+
+### Windows host
+- Install a DirectShow codec pack (e.g., [K-Lite Codec Pack](https://codecguide.com/download_kl.htm)) so the Video Monitor tab can preview H.264/AAC MP4 files. Without it you’ll see `DirectShowPlayerService` errors, though uploads still succeed.
+
+## Setup
 
 1. **Create an environment**
    ```bash
-   conda create -n helicalsw python=3.9
-   conda activate helicalsw
+   conda create -n vam_env python=3.9.11 vamtoolbox -c vamtoolbox -c conda-forge -c astra-toolbox
+   conda activate vam_env
    ```
-
 2. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
+3. (Optional) Update `config_heliCAL.json` or Jetson credentials inside `gui_test.py` to match your lab setup.
 
-   `requirements.txt` includes PyQt5, PySerial, Paramiko, vamtoolbox, PyTorch, matplotlib, and other packages referenced across the repo. Some LEAP demos expect CUDA-capable hardware but are optional.
+## Running the Control Station
 
-3. **Run the control station**
-   ```bash
-   python gui_test.py
-   ```
+```bash
+python gui_test.py
+```
 
-   - Demo Mode supplies packaged STL files so you can exercise the pipeline without real parts.
-   - The GUI probes the Jetson via SSH on startup. Use the Connect/Disconnect buttons to manage the session manually.
-- The Pipeline tab saves projection PNGs, angle montages, toy G-code, and video previews under the chosen output folder.
-- Upload MP4 projector assets from your workstation; the GUI copies them to the Jetson, starts playback, and mirrors the video on a dedicated "Video Monitor" tab.
-- Windows relies on the installed DirectShow codecs for the preview tab. If you see a DirectShowPlayerService error, install an H.264/AAC codec pack (e.g., K-Lite) or re-encode the video.
-- The G-code tab now includes a “Set LED Current” control that issues `M205 S###` so you can adjust projector current (0–30000 mA) after homing without rebuilding firmware.
-- The console panel accepts typed commands via its new input line so you can interact with the Jetson as if it were a terminal.
-- End/stop sequences only send `M18 R T`, so the Z-axis motors stay energized even when prints are halted or the Jetson shuts down.
+- **Connection workflow** – The GUI probes SSH automatically on launch. When you click **Connect** it prompts for the Jetson password; failed attempts immediately reprompt. Disconnecting or losing the link resets the cached state so you can reconnect without restarting the app.
+- **Pipeline tab** – Choose an STL (or enable Demo Mode), configure reconstruction parameters, and run the worker thread. Outputs include `sinogram_view.png`, `reconstruction_slice.png`, `angle_montage.png`, `toy_exposure.gcode`, and `reconstruction_preview.mp4` in the selected output directory.
+- **G-code tab** – Issue standard motions (`G0/G1/G4/G5/G6`), jog axes, control the projector (`M200`–`M204`), and run sequences. The LED current section sends `M205 S<value>`, while the “Console Input” textbox treats anything you type as a live G/M-code command.
+- **Video Monitor tab** – Browse for an MP4 and click **Upload**. The GUI copies the file to `~/Desktop/HeliCAL_Final/Videos`, checks whether the Jetson display is unlocked, then launches mpv/xlotool commands over SSH. Playback uses GPU acceleration and the projector window is positioned automatically. The tab also plays the file locally using PyQt’s media widgets (hence the codec requirement).
+- **Logging** – SSH logs appear in both the pipeline status window and the G-code console so you can correlate remote output with local commands.
 
 ## Testing
 
-All GUI behaviour is covered by pytest using extensive mocks. Tests validate:
-
-- Pipeline parameter serialization and worker success/failure paths.
-- SSH connect/disconnect workflows, password prompts, command queuing, and log routing.
-- Serial RPM commands, encoder polling, jog controls, macro buttons, and G-code logging.
-- Pipeline helper utilities such as sinogram previews, toy G-code generation, and reconstruction video export.
-
-Run the suite after installing requirements:
+Run the pytest suite (no hardware required—the fixtures stub paramiko, serial, and vamtoolbox):
 
 ```bash
 python -m pytest tests/test_gui_control_station.py
 ```
 
-No hardware is required—the suite stubs paramiko, serial, and vamtoolbox modules and feeds deterministic data into the GUI.
+The tests cover pipeline configuration, SSH workflows, dialog handling, jog macros, and the helper utilities in `pipeline_helpers.py`.
 
-## Packaging / Build Artifacts
+## Packaging / Large Files
 
-PyInstaller outputs will appear in `build/` and `dist/`. These directories are ignored; if you accidentally tracked them in a prior commit, untrack them via:
+PyInstaller builds land in `build/` and `dist/`. These directories are ignored—if you accidentally tracked them, unstage with:
 
 ```bash
 git rm -r --cached build dist
-git commit -m "Remove generated binaries"
 ```
 
-GitHub rejects files larger than 100 MB. Use Git LFS if you need to share installers, or distribute them outside this repository.
+GitHub blocks files larger than 100 MB. Use Git LFS or another artifact channel if you need to share installers.
+
+## Troubleshooting
+
+- **DirectShowPlayerService errors** – Install an H.264/AAC codec pack (K-Lite) on Windows so the preview tab can render MP4s.
+- **Video uploads hang at “Checking remote display”** – Unlock the Jetson desktop. The GUI polls `xset q`; if the greeter is active, mpv cannot grab a display.
+- **Projector window missing/misaligned** – Ensure `mpv` and `xdotool` are installed on the Jetson and reachable on `$PATH`. Check `/tmp/mpv.log` via SSH for decoder errors.
+- **SSH password mistakes** – The dialog reappears automatically. If you still cannot connect, verify network connectivity and the Wi-Fi credentials printed in the error dialog.
 
 ## Contribution Guidelines
 
 1. Branch from `main`.
-2. Make your changes and update docs/tests as needed.
+2. Implement your changes and update docs/tests accordingly.
 3. Run `python -m pytest tests/test_gui_control_station.py`.
-4. Ensure large binaries remain untracked (`git status` should not show `build/` or `dist/`).
-5. Submit a pull request with a concise summary and testing notes.
+4. Confirm `git status` is clean (no generated binaries).
+5. Submit a PR with a concise summary and testing notes.
 
-Document major UI or pipeline changes in this README so future developers can ramp up quickly.
+Document major UI or pipeline changes here so future developers can ramp up quickly.

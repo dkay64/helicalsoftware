@@ -1,17 +1,20 @@
-imageio
+# Core control-station + pipeline deps
 matplotlib
-numba
 numpy
-opencv-python
 paramiko
-pybind11
 PyQt5
 pyserial
-pytest
+tqdm
+
+# Optional helpers / LEAP demos
+imageio
+numba
+opencv-python
+pybind11
 scipy
 sphinx_rtd_theme
-tigre
 torch
-tqdm
 trimesh
-vamtoolbox
+
+# Testing
+pytest
