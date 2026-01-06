@@ -626,7 +626,15 @@ class HeliCALQt(QMainWindow):
         self._ssh_connecting = False
         self._ssh_connected = True
         self._update_connection_indicator()
-        QMessageBox.information(self, "Connection Successful!", "Connection Successful!")
+        choice = QMessageBox.question(
+            self,
+            "Home Machine?",
+            "Connection successful.\nWould you like to home the machine now (G28)?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if choice == QMessageBox.Yes:
+            self._send_gcode_command("G28")
 
     def _on_ssh_failed(self, err):
         """Handle failures that happen prior to authentication (e.g., compile failure or timeout)."""
@@ -845,12 +853,12 @@ class HeliCALQt(QMainWindow):
             "bash -lc 'pkill mpv >/dev/null 2>&1 || true'",
             (
                 "bash -lc 'DISPLAY=:0 nohup mpv --vo=gpu --hwdec=auto --title=ProjectorVideo "
-                "--pause --no-border --loop=inf --video-rotate=180 "
+                "--keep-open --fullscreen --loop=inf --no-terminal --video-rotate=180 "
                 f"{shlex.quote(remote_path)} >/tmp/mpv.log 2>&1 & sleep 0.5'"
             ),
             "bash -lc 'DISPLAY=:0 xdotool search --name ProjectorVideo windowmove 1920 0 || true'",
             "bash -lc 'DISPLAY=:0 xdotool search --name ProjectorVideo windowsize 2560 1600 || true'",
-            "bash -lc \"DISPLAY=:0 xdotool search --name ProjectorVideo windowactivate --sync key f || true\"",
+            "bash -lc \"DISPLAY=:0 xdotool search --name ProjectorVideo windowactivate --sync key space || true\"",
         ]
         for cmd in commands:
             self._ssh_worker.enqueue_shell(cmd, False)

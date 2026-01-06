@@ -359,6 +359,24 @@ def test_disconnect_clicked_no_connection_shows_info(gui, dialog_spy):
     assert dialog_spy["information"]
 
 
+def test_on_ssh_success_homes_when_confirmed(gui, dialog_spy):
+    """Successful connections should prompt for homing and run G28 when accepted."""
+    sent = []
+    gui._send_gcode_command = sent.append
+    gui._on_ssh_success()
+    assert dialog_spy["question"]
+    assert sent == ["G28"]
+
+
+def test_on_ssh_success_skips_homing_when_declined(gui, dialog_spy):
+    """Operators can decline homing immediately after connecting."""
+    dialog_spy["_question_return"] = gui_test.QMessageBox.No
+    sent = []
+    gui._send_gcode_command = sent.append
+    gui._on_ssh_success()
+    assert sent == []
+
+
 def test_collect_feedrates_only_returns_filled_entries(gui):
     """FR/FT/FZ strings should only appear for text boxes that contain numbers."""
     gui.le_g1_fr.setText("100")

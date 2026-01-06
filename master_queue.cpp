@@ -202,12 +202,14 @@ int main() {
         m->setTargetVelocity(0);
     }
 
-    // ===== 2) Optional: home on startup =====
-    cout << "Homing R/T/Z ..." << endl;
-    zeroAxisPair(tic_tw_r, tic_cw_r, HOME_DIR_R, HOME_OFF_R);
-    zeroAxisPair(tic_tw_t, tic_cw_t, HOME_DIR_T, HOME_OFF_T);
-    zeroAxisPair(tic_tw_z1, tic_tw_z2, tic_cw_z1, tic_cw_z2, HOME_DIR_Z, HOME_OFF_Z);
-    cout << "Homing complete." << endl;
+    // 
+    // // ===== 2) Optional: home on startup =====
+    // cout << "Homing R/T/Z ..." << endl;
+    // zeroAxisPair(tic_tw_r, tic_cw_r, HOME_DIR_R, HOME_OFF_R);
+    // zeroAxisPair(tic_tw_t, tic_cw_t, HOME_DIR_T, HOME_OFF_T);
+    // zeroAxisPair(tic_tw_z1, tic_tw_z2, tic_cw_z1, tic_cw_z2, HOME_DIR_Z, HOME_OFF_Z);
+    // cout << "Homing complete." << endl;
+    //     
 
     // Projector / LED basic init
     led.configure();
