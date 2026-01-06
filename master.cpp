@@ -458,6 +458,12 @@ int main() {
                     case 202: system("xdotool search --name ProjectorVideo windowactivate --sync key space"); cout << "M202: Projector video PLAY/TOGGLE.\n"; break;
                     case 203: system("xdotool search --name ProjectorVideo windowactivate --sync key space"); cout << "M203: Projector video PAUSE/TOGGLE.\n"; break;
                     case 204: system("xdotool search --name ProjectorVideo windowactivate --sync key home");  cout << "M204: Projector video RESTART.\n"; break;
+                    case 999:
+                        cout << "M999: Halt and hold all axes.\n";
+                        AX_R.haltAndHold();
+                        AX_T.haltAndHold();
+                        AX_Z.haltAndHold();
+                        break;
                     case 210: {
                         Esp32UART::ImuSample sample;
                         if (uart.getImuSample(sample)) {

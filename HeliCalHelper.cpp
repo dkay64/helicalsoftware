@@ -37,6 +37,14 @@ bool abort_requested() {
     return _abort_flag.load();
 }
 
+void request_abort() {
+    _abort_flag.store(true);
+}
+
+void clear_abort_request() {
+    _abort_flag.store(false);
+}
+
 bool consume_enter() {
     if (_enter_flag.load()) {
         _enter_flag.store(false);

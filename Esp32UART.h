@@ -21,24 +21,6 @@ public:
         float correctiveAngle_deg = 0.0f;
     };
 
-    Esp32UART(const std::string& uartDevice, int baudRate);
-    ~Esp32UART();
-
-    void writeCommand(uint8_t command, uint8_t subcommand, uint8_t value);
-    int32_t getEncoderPosition(uint8_t encoder);
-    void getAllEncoderPositions(int32_t positions[5]);
-    void setDcDriverPwm(uint8_t pwm_val);
-    void setDcDriverDir(bool dir_val);
-    void startThetaZero();
-    bool isThetaZeroed();
-    int32_t getThetaZeroMeasurement();
-    void waitForThetaZeroComplete();
-    void setThetaVelocity(int32_t velocity);
-
-    bool getImuSample(ImuSample& outSample, uint32_t timeoutMs = 500);
-    bool requestImuCalibration(uint32_t timeoutMs = 5000);
-
-private:
     struct PacketHeader {
         char sync0 = 'I';
         char sync1 = 'M';
@@ -60,6 +42,24 @@ private:
         float correctiveAngle_deg;
     };
 
+    Esp32UART(const std::string& uartDevice, int baudRate);
+    ~Esp32UART();
+
+    void writeCommand(uint8_t command, uint8_t subcommand, uint8_t value);
+    int32_t getEncoderPosition(uint8_t encoder);
+    void getAllEncoderPositions(int32_t positions[5]);
+    void setDcDriverPwm(uint8_t pwm_val);
+    void setDcDriverDir(bool dir_val);
+    void startThetaZero();
+    bool isThetaZeroed();
+    int32_t getThetaZeroMeasurement();
+    void waitForThetaZeroComplete();
+    void setThetaVelocity(int32_t velocity);
+
+    bool getImuSample(ImuSample& outSample, uint32_t timeoutMs = 500);
+    bool requestImuCalibration(uint32_t timeoutMs = 5000);
+
+private:
     static constexpr uint8_t CMD_ENCODER_POSITION = 0x10;
     static constexpr uint8_t ENCODER_ALL = 0xFF;
     static constexpr uint8_t CMD_DC_DRIVER = 0x20;

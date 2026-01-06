@@ -451,10 +451,15 @@ class HeliCALQt(QMainWindow):
         self.btn_manual_disconnect.setFixedWidth(100)
         self.btn_manual_disconnect.clicked.connect(self._disconnect_clicked)
         self.btn_manual_disconnect.setEnabled(False)
+        self.btn_estop = QPushButton("E-Stop")
+        self.btn_estop.setStyleSheet("background-color: #b00020; color: white; font-weight: bold;")
+        self.btn_estop.setFixedWidth(100)
+        self.btn_estop.clicked.connect(lambda: self._send_gcode_command("M999"))
         self._update_connection_indicator()
 
         top_bar = QHBoxLayout()
         top_bar.addStretch(1)
+        top_bar.addWidget(self.btn_estop)
         top_bar.addWidget(self.connection_indicator)
         top_bar.addWidget(self.btn_manual_connect)
         top_bar.addWidget(self.btn_manual_disconnect)
@@ -1003,6 +1008,8 @@ class HeliCALQt(QMainWindow):
         btn_m18.clicked.connect(lambda: self._send_gcode_command("M18"))
         btn_m112 = QPushButton("M112 (E-Stop)")
         btn_m112.clicked.connect(lambda: self._send_gcode_command("M112"))
+        btn_m999 = QPushButton("M999 (Halt & Hold)")
+        btn_m999.clicked.connect(lambda: self._send_gcode_command("M999"))
         btn_g28 = QPushButton("G28 (Home)")
         btn_g28.clicked.connect(lambda: self._send_gcode_command("G28"))
 
@@ -1010,6 +1017,7 @@ class HeliCALQt(QMainWindow):
         control_layout.addWidget(btn_m18, 2, 1)
         control_layout.addWidget(btn_m112, 2, 2)
         control_layout.addWidget(btn_g28, 3, 0)
+        control_layout.addWidget(btn_m999, 3, 1)
 
         btn_g90 = QPushButton("G90 (Absolute)")
         btn_g90.clicked.connect(lambda: self._send_gcode_command("G90"))

@@ -377,6 +377,14 @@ def test_on_ssh_success_skips_homing_when_declined(gui, dialog_spy):
     assert sent == []
 
 
+def test_estop_button_sends_m999(gui):
+    """Clicking the UI e-stop must issue the new G-code command."""
+    sent = []
+    gui._send_gcode_command = sent.append
+    gui.btn_estop.click()
+    assert sent == ["M999"]
+
+
 def test_collect_feedrates_only_returns_filled_entries(gui):
     """FR/FT/FZ strings should only appear for text boxes that contain numbers."""
     gui.le_g1_fr.setText("100")
