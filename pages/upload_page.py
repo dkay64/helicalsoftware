@@ -26,6 +26,7 @@ class DragDropZone(QFrame):
     and can be clicked to open a file dialog.
     """
     fileDropped = pyqtSignal(str)
+    fileInvalid = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -101,11 +102,16 @@ class DragDropZone(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
         for url in event.mimeData().urls():
-            if url.isLocalFile() and url.toLocalFile().lower().endswith(".mp4"):
+            if url.isLocalFile():
                 file_path = url.toLocalFile()
-                self.fileDropped.emit(file_path)
-                event.accept()
-                return
+                if file_path.lower().endswith(".mp4"):
+                    self.fileDropped.emit(file_path)
+                    event.accept()
+                    return
+                else:
+                    self.fileInvalid.emit("Invalid file type. Only .mp4 videos are accepted.")
+                    event.ignore()
+                    return
         event.ignore()
 
     def mouseReleaseEvent(self, event):
@@ -122,6 +128,7 @@ class UploadPage(QWidget):
     Manages the two states of the upload process: Drop Zone and Preview.
     """
     fileConfirmed = pyqtSignal(str)
+    log_message = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -140,12 +147,16 @@ class UploadPage(QWidget):
         drop_zone_layout.setAlignment(Qt.AlignCenter)
         self.drop_zone = DragDropZone()
         self.drop_zone.fileDropped.connect(self.on_file_loaded)
+        self.drop_zone.fileInvalid.connect(self.on_file_invalid)
         drop_zone_layout.addWidget(self.drop_zone)
         self.stack.addWidget(self.drop_zone_widget)
 
         # State B: Video Preview
         self.video_preview_widget = self._create_preview_widget()
         self.stack.addWidget(self.video_preview_widget)
+
+    def on_file_invalid(self, error_message):
+        self.log_message.emit(error_message, "ERROR")
 
     def _create_preview_widget(self):
         """Creates the State B widget for video preview and confirmation."""
@@ -227,14 +238,22 @@ class UploadPage(QWidget):
         return preview_widget
 
     def on_file_loaded(self, file_path):
-        self.file_path = file_path
-        display_name = os.path.basename(file_path)
-        if len(display_name) > 40:
-            display_name = "..." + display_name[-37:]
-        self.filename_label.setText(f"Loaded: {display_name}")
-        self.player.setMedia(QMediaContent(QUrl.fromLocalFile(file_path)))
-        self.stack.setCurrentWidget(self.video_preview_widget)
-        self.player.play()
+        try:
+            self.file_path = file_path
+            display_name = os.path.basename(file_path)
+            if len(display_name) > 40:
+                display_name = "..." + display_name[-37:]
+            
+            self.filename_label.setText(f"Loaded: {display_name}")
+            self.player.setMedia(QMediaContent(QUrl.fromLocalFile(file_path)))
+            
+            self.stack.setCurrentWidget(self.video_preview_widget)
+            self.log_message.emit(f"File loaded: {display_name}", "INFO")
+            self.player.play()
+
+        except Exception as e:
+            self.log_message.emit(f"Failed to load video: {e}. The file may be corrupt or in an unsupported format.", "ERROR")
+            self.reset()
 
     def toggle_playback(self):
         if self.player.state() == QMediaPlayer.PlayingState:
@@ -250,6 +269,7 @@ class UploadPage(QWidget):
 
     def confirm_file(self):
         if self.file_path:
+            self.log_message.emit("File confirmed, proceeding to machine setup.", "INFO")
             self.fileConfirmed.emit(self.file_path)
 
     def reset(self):

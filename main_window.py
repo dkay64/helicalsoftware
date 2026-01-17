@@ -1,15 +1,19 @@
 import os
-os.environ['QT_MULTIMEDIA_PREFERRED_PLUGINS'] = 'windowsmediafoundation'
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QStackedWidget, QLabel, QFrame, QTextEdit, QSplitter,
-    QToolButton
+    QToolButton, QMessageBox, QInputDialog, QLineEdit
 )
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QDateTime
 
+from backend.ssh_worker import SSHWorker
 from pages.upload_page import UploadPage
+from pages.setup_page import SetupPage
+from pages.run_page import RunPage
+from pages.display_page import DisplayPage
+from components.jog_dialog import JogDialog
 
 def load_stylesheet(app):
     """Loads the global QSS stylesheet for the application."""
@@ -111,10 +115,36 @@ def load_stylesheet(app):
         font-size: 28px;
         font-weight: bold;
     }
+    /* --- Display Page --- */
+    #Card {
+        background-color: #1a1a1c;
+        border-radius: 10px;
+        padding: 15px;
+        border: 1px solid #27272a;
+    }
+    #Card QLabel {
+        color: #e4e4e7;
+        font-size: 12px;
+    }
+    #Card QLabel[cssClass="card-title"] {
+        font-size: 16px;
+        font-weight: bold;
+        padding-bottom: 10px;
+    }
+    #Card QLabel[cssClass="sensor-label"] {
+        font-weight: bold;
+    }
+    #Card QLabel[cssClass="target-value"] {
+        color: #a1a1aa;
+    }
+    #Card QLabel[cssClass="actual-value"] {
+        color: #22c55e; /* Green */
+        font-weight: bold;
+    }
     """
     app.setStyleSheet(style_sheet)
 
-# --- Placeholder Page Widget ---
+# --- Placeholder Page Widget --- 
 class PlaceholderPage(QWidget):
     def __init__(self, name, parent=None):
         super().__init__(parent)
@@ -125,7 +155,7 @@ class PlaceholderPage(QWidget):
         label.setObjectName("Page_Title")
         layout.addWidget(label)
 
-# --- Main Application Window ---
+# --- Main Application Window --- 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -158,9 +188,22 @@ class MainWindow(QMainWindow):
 
         self.stacked_widget.addWidget(PlaceholderPage("HOME"))
         self.stacked_widget.addWidget(self.upload_page)  # Add the instance
-        self.stacked_widget.addWidget(PlaceholderPage("MACHINE SETUP"))
-        self.stacked_widget.addWidget(PlaceholderPage("RUN JOB"))
-        self.stacked_widget.addWidget(PlaceholderPage("DISPLAY"))
+        self.setup_page = SetupPage() # No command callback here yet
+        self.setup_page.setupCompleted.connect(self.go_to_run_job)
+        self.stacked_widget.addWidget(self.setup_page)
+        
+        self.run_page = RunPage()
+        self.run_page.runJobStarted.connect(self.go_to_display_page)
+        self.stacked_widget.addWidget(self.run_page)
+        
+        self.display_page = DisplayPage()
+        self.stacked_widget.addWidget(self.display_page)
+
+        # Connect log signals
+        self.upload_page.log_message.connect(self.append_log)
+        self.setup_page.log_message.connect(self.append_log)
+        self.run_page.log_message.connect(self.append_log)
+        self.display_page.log_message.connect(self.append_log)
         
         log_panel = self.create_log_panel()
 
@@ -174,6 +217,113 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(body_widget, 1)
         self.setCentralWidget(central_widget)
+        
+        # Connect the global emergency stop button to the display page's stop sequence
+        self.emergency_stop_button.clicked.connect(self.display_page.stop_print_sequence)
+
+        # --- Backend Integration ---
+        self.ssh_worker = SSHWorker()
+        self.ssh_worker.log_message.connect(self.append_log)
+        self.ssh_worker.connection_status.connect(self.handle_connection_status)
+        self.nav_buttons[0].clicked.connect(self.initiate_connection) # "HOME" button triggers connection
+
+        # Initialize Jog Dialog and other components that need to send commands
+        self.jog_dialog = JogDialog(command_callback=self.send_command, parent=self)
+        self.sidebar.jogBtn.clicked.connect(self.open_jog_dialog)
+        
+        # Pass send_command to any other necessary pages
+        self.setup_page.command_callback = self.send_command
+
+        # --- Job State Tracking ---
+        self.is_job_running = False
+        self.display_page.job_started.connect(self.handle_job_start)
+        self.display_page.job_ended.connect(self.handle_job_end)
+
+        # --- Data Connections ---
+        # Route sensor data to any component that needs it (like the Jog DRO)
+        self.display_page.sensor_worker.data_updated.connect(self.route_sensor_data)
+        
+        # Start the sensor worker immediately to get live data, simulating a
+        # machine that is "on" and reporting its position.
+        self.display_page.sensor_worker.start()
+        
+    def initiate_connection(self):
+        """Asks for password and starts the SSH worker thread if not already running."""
+        if self.ssh_worker.isRunning():
+            self.append_log("SSH worker is already running.", "INFO")
+            return
+
+        password, ok = QInputDialog.getText(self, "SSH Password", "Enter password for 'jetson':", QLineEdit.Password)
+        
+        if ok and password:
+            self.append_log("Attempting to connect...", "INFO")
+            self.ssh_worker.password = password
+            self.ssh_worker.start()
+        elif ok:
+            self.append_log("Password cannot be empty.", "WARNING")
+        else:
+            self.append_log("Connection attempt cancelled by user.", "INFO")
+
+    def handle_connection_status(self, connected):
+        """Updates the connection status indicator in the header."""
+        if connected:
+            self.status_dot.setStyleSheet("background-color: #22c55e; border-radius: 6px;") # Green
+            self.status_label.setText("Connected")
+        else:
+            self.status_dot.setStyleSheet("background-color: #ef4444; border-radius: 6px;") # Red
+            self.status_label.setText("Disconnected")
+            
+    def send_command(self, gcode):
+        """Global helper to send a G-code command via the SSH worker."""
+        if self.ssh_worker and self.ssh_worker.isRunning():
+            self.ssh_worker.send_gcode(gcode)
+        else:
+            self.append_log(f"Blocked command, not connected: {gcode}", "WARNING")
+
+    def append_log(self, message, level="INFO"):
+        """Appends a formatted message to the output log."""
+        color_map = {
+            "INFO": "#a1a1aa", # Gray
+            "SUCCESS": "#22c55e", # Green
+            "ERROR": "#ef4444", # Red
+            "GCODE": "#3b82f6", # Blue
+            "REMOTE": "#06b6d4", # Cyan
+            "WARNING": "#f97316" # Orange
+        }
+        color = color_map.get(level, "#e4e4e7") # Default to light gray
+        
+        timestamp = QDateTime.currentDateTime().toString("hh:mm:ss")
+        formatted_message = f'<span style="color: #6b7280;">{timestamp} | </span><span style="color: {color};">{message}</span>'
+        
+        self.output_log.append(formatted_message)
+        self.output_log.verticalScrollBar().setValue(self.output_log.verticalScrollBar().maximum())
+
+
+    def route_sensor_data(self, data):
+        """Routes sensor data to other components that need it."""
+        # Extract counterweight coordinates for the Jog DRO
+        r = data.get("cw_r", 0.0)
+        t = data.get("cw_t", 0.0)
+        z = data.get("cw_z", 0.0)
+        self.jog_dialog.update_dro(r, t, z)
+
+    def handle_job_start(self):
+        """SLOT: Sets the job running flag to True."""
+        self.is_job_running = True
+        self.append_log("Job started. Safety lock engaged for Jog control.", "INFO")
+
+    def handle_job_end(self):
+        """SLOT: Sets the job running flag to False."""
+        self.is_job_running = False
+        self.append_log("Job ended. Jog control safety lock disengaged.", "INFO")
+
+    def open_jog_dialog(self):
+        """Safety-checked method to open the Jog Dialog."""
+        if self.is_job_running:
+            self.append_log("Safety Lock: Blocked attempt to open Jog Dialog while job is running.", "WARNING")
+            QMessageBox.warning(self, "Safety Lock", "Cannot open Jog Dialog while a print job is active.")
+            return
+        self.jog_dialog.exec_()
 
     def create_header(self):
         header_widget = QFrame()
@@ -186,28 +336,32 @@ class MainWindow(QMainWindow):
         title.setObjectName("Header_Title")
         
         status_layout = QHBoxLayout()
-        status_dot = QLabel()
-        status_dot.setFixedSize(12, 12)
-        status_dot.setStyleSheet("background-color: #22c55e; border-radius: 6px;")
-        status_label = QLabel("Connected")
-        status_layout.addWidget(status_dot)
-        status_layout.addWidget(status_label)
+        self.status_dot = QLabel()
+        self.status_dot.setFixedSize(12, 12)
+        
+        self.status_label = QLabel("Disconnected")
+        status_layout.addWidget(self.status_dot)
+        status_layout.addWidget(self.status_label)
         status_layout.setSpacing(10)
+        
+        # Set initial state
+        self.handle_connection_status(False) 
 
-        stop_button = QPushButton("STOP")
-        stop_button.setObjectName("Stop_Button")
+        self.emergency_stop_button = QPushButton("STOP")
+        self.emergency_stop_button.setObjectName("Stop_Button")
         
         header_layout.addWidget(title)
         header_layout.addStretch()
         header_layout.addLayout(status_layout)
         header_layout.addSpacing(20)
-        header_layout.addWidget(stop_button)
+        header_layout.addWidget(self.emergency_stop_button)
         return header_widget
 
     def create_sidebar(self):
         sidebar_widget = QFrame()
         sidebar_widget.setObjectName("Sidebar")
         sidebar_widget.setFixedWidth(120)
+        self.sidebar = sidebar_widget
         
         sidebar_layout = QVBoxLayout(sidebar_widget)
         sidebar_layout.setContentsMargins(15, 15, 15, 15)
@@ -246,6 +400,8 @@ class MainWindow(QMainWindow):
             btn.setIconSize(QSize(40,40))
             btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             sidebar_layout.addWidget(btn)
+            if text == "JOG":
+                self.sidebar.jogBtn = btn
         
         return sidebar_widget
 
@@ -262,9 +418,9 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
 
         log_display = QTextEdit()
+        self.output_log = log_display # Assign to self
         log_display.setObjectName("Log_Display")
         log_display.setReadOnly(True)
-        log_display.setText("--- System log initialized ---\n")
 
         log_layout.addWidget(title)
         log_layout.addWidget(log_display, 1)
@@ -282,8 +438,56 @@ class MainWindow(QMainWindow):
         machine_setup_button = self.nav_buttons[2] 
         machine_setup_button.click() 
 
+    def go_to_run_job(self):
+        """
+        Gathers data from the setup page, passes it to the run page,
+        and then switches to the Run Job page.
+        """
+        # 1. Get data from setup page
+        rpm = self.setup_page.get_rpm()
+        power = self.setup_page.get_laser_power()
+        
+        # 2. Update run page with the data
+        self.run_page.update_summary(rpm, power)
+        
+        # 3. Switch to the run page
+        run_job_button = self.nav_buttons[3] 
+        run_job_button.click() 
+
+    def go_to_display_page(self):
+        """
+        Passes the video file to the display page, switches to it, and starts
+        the print sequence.
+        """
+        # 1. Get the file path from the upload page
+        video_path = self.upload_page.file_path
+        
+        # 2. Set the video source on the display page
+        if video_path and os.path.exists(video_path):
+            self.display_page.set_video_source(video_path)
+        else:
+            self.display_page.set_video_source(None)
+
+        # 3. Switch to the display page
+        display_button = self.nav_buttons[4]
+        display_button.click()
+
+        # 4. Start the G-code driven timer and sensor monitoring
+        self.display_page.start_print_sequence()
+
+
+    def closeEvent(self, event):
+        """Handle the window close event to ensure graceful shutdown."""
+        self.append_log("Closing application...", "INFO")
+        self.display_page.cleanup()
+        self.ssh_worker.stop()
+        self.ssh_worker.wait() # Wait for thread to finish
+        event.accept()
 
 if __name__ == '__main__':
+    from PyQt5.QtCore import QDateTime
+    from PyQt5.QtWidgets import QLineEdit
+    
     app = QApplication(sys.argv)
     load_stylesheet(app)
     window = MainWindow()
