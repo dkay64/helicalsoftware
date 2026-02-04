@@ -211,10 +211,11 @@ class DisplayPage(QWidget):
     job_started = pyqtSignal()
     job_ended = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.setObjectName("DisplayPage")
         self.setStyleSheet(STYLESHEET)
+        self.main_window = main_window
         
         self.media_player = None
         self.media_player_error = False
@@ -354,15 +355,32 @@ class DisplayPage(QWidget):
         self.imu_card.update_values(data)
 
     def on_end_print_clicked(self):
-        self.stop_print_sequence()
+        """A graceful end to the print job."""
+        self.log_message.emit("--- GRACEFUL JOB STOP ---", "INFO")
+        self.main_window.send_command('M203')  # Pause Video
+        self.main_window.send_command('M201')  # Projector Off
+        
+        self.job_timer.stop()
+        if self.media_player:
+            self.media_player.pause()
+            
         self.end_print_button.setText("Job Stopped")
         self.end_print_button.setEnabled(False)
         self.timer_label.setStyleSheet("color: #a1a1aa;")
+        self.job_ended.emit()
 
     def start_print_sequence(self):
         """Starts the timer, video (if available), and sensor data."""
+        # Reset UI state for a new run
+        self.job_time.setHMS(0,0,0)
+        self.timer_label.setText("00:00:00")
+        self.timer_label.setStyleSheet("") # Reset color
+        self.end_print_button.setText("End Print")
+        self.end_print_button.setEnabled(True)
+
+        # Start processes
         self.job_started.emit()
-        self.log_message.emit("Sending G-Code: M202 (Projector Play)", "GCODE")
+        self.log_message.emit("Job sequence started. Timer and sensors are live.", "SUCCESS")
         self.job_timer.start(1000)
         
         if self.media_player and not self.media_player_error:
@@ -373,15 +391,23 @@ class DisplayPage(QWidget):
 
     def stop_print_sequence(self):
         """Stops the timer, video, and sensors, typically for E-Stop."""
+        if not self.job_timer.isActive(): return # Prevent double-stops
+
         self.job_ended.emit()
-        self.log_message.emit("Sending G-Code: M203 (Projector Pause)", "GCODE")
+        self.log_message.emit("--- EMERGENCY STOP ---", "ERROR")
+        
+        # Stop all remote and local processes immediately
+        self.main_window.send_command('M203') # Attempt to pause video
+        self.main_window.send_command('M201') # Turn off projector
+        self.main_window.ssh_worker.stop_remote_video() # Kill remote video player
+        
         self.job_timer.stop()
         
         if self.media_player:
             self.media_player.pause()
         
-        # This is a critical safety message
-        self.log_message.emit("Sending G-Code: M112 (Emergency Stop)", "GCODE")
+        # This is a critical safety message, sent via main_window
+        self.main_window.send_command("M112")
             
     def cleanup(self):
         # Full stop of everything on window close
@@ -397,9 +423,17 @@ if __name__ == '__main__':
     font = QFont("Segoe UI")
     app.setFont(font)
     
+    
+    # Mock main window for testing
+    class MockMainWindow:
+        def __init__(self):
+            self.job_data = {}
+        def send_command(self, cmd): print(f"SENT CMD: {cmd}")
+
     window = QWidget()
     layout = QVBoxLayout(window)
-    display_page = DisplayPage()
+    mock_main_window = MockMainWindow()
+    display_page = DisplayPage(main_window=mock_main_window)
     layout.addWidget(display_page)
     
     window.setWindowTitle("HeliCAL Display Page")

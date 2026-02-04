@@ -1,5 +1,5 @@
-
 import sys
+import os
 from PyQt5.QtWidgets import (
     QApplication,
     QWidget,
@@ -72,6 +72,17 @@ QPushButton#StopButton:hover {
     color: white;
 }
 
+QPushButton#PendingButton {
+    background-color: #3f3f46; /* A neutral gray */
+    color: #a1a1aa;
+    font-weight: bold;
+    font-size: 14pt;
+    padding: 12px;
+    border-radius: 8px;
+    border: none;
+    cursor: not-allowed;
+}
+
 QPushButton#SuccessButton {
     background-color: #22c55e;
     color: white;
@@ -96,7 +107,15 @@ QPushButton#TransparentButton:hover {
 }
 
 QLabel#CameraPlaceholder { background-color: black; border-radius: 8px; }
-QLabel#SummaryLabel { font-size: 12pt; color: #e4e4e7; }
+QTextEdit#SummaryText { 
+    font-size: 11pt; 
+    color: #a1a1aa;
+    background-color: #09090b;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    font-family: 'monospace';
+}
+QLabel#SummaryLabel { font-size: 12pt; color: #a1a1aa; }
 QLabel#StatusLabelRec { color: #ef4444; font-weight: bold; font-size: 11pt; }
 QLabel#StatusLabelNotRec { color: #71717a; font-size: 11pt; }
 
@@ -125,12 +144,12 @@ class RunPage(QWidget):
     runJobStarted = pyqtSignal()
     log_message = pyqtSignal(str, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.setObjectName("RunPage")
         self.setStyleSheet(CARD_STYLE)
+        self.main_window = main_window
         
-        self.is_recording = False
         self.is_rotation_active = False
         
         main_layout = QVBoxLayout(self)
@@ -139,11 +158,9 @@ class RunPage(QWidget):
         main_layout.setAlignment(Qt.AlignTop)
 
         self.rotation_card = self._create_rotation_card()
-        self.camera_card = self._create_camera_card()
         self.summary_card = self._create_summary_card()
         
         main_layout.addWidget(self.rotation_card)
-        main_layout.addWidget(self.camera_card)
         main_layout.addWidget(self.summary_card)
         main_layout.addStretch()
 
@@ -166,7 +183,6 @@ class RunPage(QWidget):
         self.stop_rotation_btn.setVisible(False)
         self.start_rotation_btn.style().polish(self.start_rotation_btn) # Re-apply style
 
-        self._set_step_enabled(self.camera_card, False)
         self._set_step_enabled(self.summary_card, False)
 
     def _create_card_frame(self):
@@ -207,114 +223,140 @@ class RunPage(QWidget):
         layout.addLayout(button_layout)
         return card
 
-    def _create_camera_card(self):
-        card = self._create_card_frame()
-        layout = QVBoxLayout(card)
-        layout.setSpacing(15)
-        header = self._create_header_label("2. CAMERA FEED")
-        layout.addWidget(header)
-        self.camera_placeholder = QLabel()
-        self.camera_placeholder.setObjectName("CameraPlaceholder")
-        self.camera_placeholder.setMinimumHeight(200)
-        self.camera_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(self.camera_placeholder)
-        controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(15)
-        start_recording_btn = QPushButton("START RECORDING")
-        start_recording_btn.setObjectName("SuccessButton")
-        start_recording_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        start_recording_btn.clicked.connect(self._on_start_recording)
-        continue_no_rec_btn = QPushButton("Continue without recording")
-        continue_no_rec_btn.setObjectName("TransparentButton")
-        continue_no_rec_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        continue_no_rec_btn.clicked.connect(self._on_continue_without_recording)
-        controls_layout.addWidget(start_recording_btn)
-        controls_layout.addWidget(continue_no_rec_btn)
-        layout.addLayout(controls_layout)
-        return card
+
 
     def _create_summary_card(self):
         card = self._create_card_frame()
         layout = QVBoxLayout(card)
         layout.setSpacing(15)
-        header = self._create_header_label("3. PRINT SUMMARY")
+        header = self._create_header_label("3. RUN SUMMARY & START")
         layout.addWidget(header)
+        
         data_layout = QVBoxLayout()
         data_layout.setSpacing(8)
-        self.rpm_label = QLabel("RPM: <span style='color:white;'>N/A</span>")
+        
+        self.video_file_label = QLabel("Video File: <span style='color:white;'>N/A</span>")
+        self.video_file_label.setObjectName("SummaryLabel")
+        
+        self.rpm_label = QLabel("Spindle RPM: <span style='color:white;'>N/A</span>")
         self.rpm_label.setObjectName("SummaryLabel")
-        self.laser_label = QLabel("Laser Power: <span style='color:white;'>N/A</span>")
-        self.laser_label.setObjectName("SummaryLabel")
+        
+        self.power_label = QLabel("Laser Power: <span style='color:white;'>N/A</span>")
+        self.power_label.setObjectName("SummaryLabel")
+
+        self.feed_rate_label = QLabel("Feed Rate: <span style='color:white;'>N/A</span>")
+        self.feed_rate_label.setObjectName("SummaryLabel")
+        
         time_label = QLabel("Est. Time: <span style='color:white;'>01:00:00</span>")
         time_label.setObjectName("SummaryLabel")
+        
+        data_layout.addWidget(self.video_file_label)
         data_layout.addWidget(self.rpm_label)
-        data_layout.addWidget(self.laser_label)
+        data_layout.addWidget(self.power_label)
+        data_layout.addWidget(self.feed_rate_label)
         data_layout.addWidget(time_label)
+        
         layout.addLayout(data_layout)
         layout.addSpacing(20)
-        self.recording_status_label = QLabel("Camera not recording")
-        self.recording_status_label.setObjectName("StatusLabelNotRec")
-        layout.addWidget(self.recording_status_label)
+        
         layout.addStretch()
+        
         footer_layout = QHBoxLayout()
         footer_layout.addStretch()
-        start_run_btn = QPushButton("STEP 4: START RUN")
-        start_run_btn.setObjectName("PrimaryButton")
-        start_run_btn.clicked.connect(self._on_start_run_clicked)
-        footer_layout.addWidget(start_run_btn)
+        self.start_run_btn = QPushButton("UPLOADING VIDEO...")
+        self.start_run_btn.setObjectName("PendingButton")
+        self.start_run_btn.clicked.connect(self._on_start_run_clicked)
+        self.start_run_btn.setEnabled(False)  # Disabled by default
+        footer_layout.addWidget(self.start_run_btn)
         layout.addLayout(footer_layout)
         return card
 
-    def update_summary(self, rpm, power):
-        self.rpm_label.setText(f"RPM: <span style='color:white;'>{rpm}</span>")
-        self.laser_label.setText(f"Laser Power: <span style='color:white;'>{power}</span>")
-        self.log_message.emit(f"Run parameters loaded - RPM: {rpm}, Laser Power: {power}", "INFO")
+    def update_summary(self):
+        """Updates the summary labels with all job parameters."""
+        job_data = self.main_window.job_data
+        video_path = job_data.get('video_path', 'N/A')
+        feed_rate = job_data.get('feed_rate', 'N/A')
+        rpm = job_data.get('rpm', 'N/A')
+        power = job_data.get('power', 'N/A')
+        
+        self.video_file_label.setText(f"Video File: <span style='color:white;'>{os.path.basename(video_path)}</span>")
+        self.rpm_label.setText(f"Spindle RPM: <span style='color:white;'>{rpm}</span>")
+        self.power_label.setText(f"Laser Power: <span style='color:white;'>{power}</span>")
+        self.feed_rate_label.setText(f"Feed Rate: <span style='color:white;'>{feed_rate} mm/s</span>")
+        
+        self.log_message.emit("Run parameters loaded into summary view.", "INFO")
+
+    def on_upload_complete(self):
+        """SLOT: Called when the video has finished uploading in the background."""
+        self.log_message.emit("Video upload complete. Ready to start job.", "SUCCESS")
+        self.start_run_btn.setText("START JOB")
+        self.start_run_btn.setEnabled(True)
+        self.start_run_btn.setObjectName("PrimaryButton")
+        self.start_run_btn.style().polish(self.start_run_btn)
         
     def _on_start_rotation(self):
-        self.log_message.emit("Motor Started (G33)", "INFO")
+        """Retrieves RPM from job_data and sends the G33 command."""
+        rpm = self.main_window.job_data.get('rpm', 0)
+        self.log_message.emit(f"Starting rotation at {rpm} RPM.", "INFO")
+        self.main_window.send_command(f"G33 A{rpm}")
+        
         self.is_rotation_active = True
         self.start_rotation_btn.setText("ROTATION ACTIVE")
         self.start_rotation_btn.setObjectName("ActiveStateButton")
         self.start_rotation_btn.setEnabled(False)
         self.start_rotation_btn.style().polish(self.start_rotation_btn)
         self.stop_rotation_btn.setVisible(True)
-        self._set_step_enabled(self.camera_card, True)
+        self._set_step_enabled(self.summary_card, True)
 
     def _on_stop_rotation(self):
-        self.log_message.emit("M5 - Spindle Off", "GCODE")
+        # M5 is spindle stop, a good command for this action
+        self.main_window.send_command("G33 A0")
         self._reset_to_initial_state()
 
-    def _on_start_recording(self):
-        self.log_message.emit("Camera recording started.", "INFO")
-        self.is_recording = True
-        self._update_recording_status()
-        self._set_step_enabled(self.summary_card, True)
 
-    def _on_continue_without_recording(self):
-        self.log_message.emit("Continuing without camera recording.", "INFO")
-        self.is_recording = False
-        self._update_recording_status()
-        self._set_step_enabled(self.summary_card, True)
 
     def _on_start_run_clicked(self):
-        """Handles the final 'Start Run' click, including a safety check."""
+        """
+        Handles the final 'Start Run' click.
+        Sends setup G-codes, starts the remote video, and triggers the job.
+        """
+        self.log_message.emit("'_on_start_run_clicked' entered.", "INFO")
+
         if not self.is_rotation_active:
             self.log_message.emit("Safety Halt: Rotation not active. Print aborted.", "ERROR")
+            QMessageBox.critical(self, "Safety Halt", "Rotation is not active. Please start rotation before running the job.")
             return
+        
+        self.log_message.emit("Rotation check passed.", "INFO")
 
-        self.log_message.emit("G-CODE execution started.", "GCODE")
+        power = self.main_window.job_data.get('power', 0)
+        feed_rate = self.main_window.job_data.get('feed_rate', 100) # Default feed rate
+        video_path = self.main_window.job_data.get('video_path')
+
+        if not video_path:
+            self.log_message.emit("Critical Error: Video path not found in job data.", "ERROR")
+            QMessageBox.critical(self, "Job Error", "Cannot start job: The video path is missing. Please go back to the upload step.")
+            return
+            
+        self.log_message.emit(f"Video path found: {video_path}", "INFO")
+
+        self.log_message.emit("--- FINAL JOB START SEQUENCE ---", "SUCCESS")
+        
+        # 1. Send Setup G-Codes
+        self.main_window.send_command("M200") # Projector On
+        self.main_window.send_command(f"F{feed_rate}")   # Set Feed Rate
+
+        # 2. Start Remote Video Playback
+        self.main_window.start_remote_video(video_path)
+
+        # 3. Send Start Trigger (Projector)
+        self.main_window.send_command('M202')
+        
+        # 4. Transition to Display Page (the signal will do this)
+        self.log_message.emit("Emitting runJobStarted signal.", "INFO")
         self.runJobStarted.emit()
         
-    def _update_recording_status(self):
-        if self.is_recording:
-            self.recording_status_label.setText("● CAMERA IS RECORDING")
-            self.recording_status_label.setObjectName("StatusLabelRec")
-        else:
-            self.recording_status_label.setText("Camera not recording")
-            self.recording_status_label.setObjectName("StatusLabelNotRec")
-        
-        self.recording_status_label.style().unpolish(self.recording_status_label)
-        self.recording_status_label.style().polish(self.recording_status_label)
+
 
 # Example usage for testing
 if __name__ == '__main__':
@@ -322,13 +364,25 @@ if __name__ == '__main__':
     window = QWidget()
     window.setWindowTitle("Run Page Test")
     window.setGeometry(100, 100, 800, 900)
+    
+    # Mock main window for testing
+    class MockMainWindow:
+        def __init__(self):
+            self.job_data = {'rpm': 1500, 'power': 200, 'feed_rate': 50, 'video_path': '/fake/path/video.mp4'}
+        def send_command(self, cmd): print(f"SENT CMD: {cmd}")
+        def start_remote_video(self): print("STARTING REMOTE VIDEO")
+
     window.setStyleSheet("background-color: #09090b;")
-    run_page = RunPage()
+    run_page = RunPage(main_window=MockMainWindow())
     layout = QVBoxLayout(window)
     layout.addWidget(run_page)
     window.setLayout(layout)
+    
     def on_run_started():
         print("Signal 'runJobStarted' was emitted!")
+        
     run_page.runJobStarted.connect(on_run_started)
+    run_page.update_summary() # Manually call for test
+    
     window.show()
     sys.exit(app.exec_())

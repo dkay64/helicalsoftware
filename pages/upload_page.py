@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QHBoxLayout,
     QToolButton,
+    QMessageBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QUrl, QSize
 from PyQt5.QtGui import QPixmap, QIcon
@@ -130,9 +131,10 @@ class UploadPage(QWidget):
     fileConfirmed = pyqtSignal(str)
     log_message = pyqtSignal(str, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.setObjectName("UploadPage")
+        self.main_window = main_window
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setAlignment(Qt.AlignCenter)
@@ -268,9 +270,22 @@ class UploadPage(QWidget):
             self.play_pause_button.setIcon(QIcon('assets/icons/play.svg'))
 
     def confirm_file(self):
+        """
+        Confirms the file selection, stores the path in the main window's job_data,
+        starts the background upload, and emits the signal to proceed to the next page.
+        """
         if self.file_path:
-            self.log_message.emit("File confirmed, proceeding to machine setup.", "INFO")
+            self.log_message.emit("File confirmed, starting background upload.", "INFO")
+            
+            # Store data and start upload via main_window
+            self.main_window.job_data['video_path'] = self.file_path
+            self.main_window.start_upload(self.file_path)
+            
+            # Proceed to the next step in the UI
             self.fileConfirmed.emit(self.file_path)
+        else:
+            self.log_message.emit("Cannot proceed: No file selected.", "WARNING")
+            QMessageBox.warning(self, "No File Selected", "Please select a video file before proceeding.")
 
     def reset(self):
         self.player.stop()

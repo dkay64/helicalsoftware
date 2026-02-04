@@ -2,7 +2,7 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
     QPushButton, QGridLayout, QSizePolicy, QSpinBox, QSpacerItem, QFormLayout,
-    QDialog, QDialogButtonBox, QDoubleSpinBox
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QScrollArea
 )
 from PyQt5.QtGui import QFont
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -100,19 +100,44 @@ class SetupPage(QWidget):
     setupCompleted = pyqtSignal()
     log_message = pyqtSignal(str, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.setObjectName("SetupPage")
+        self.main_window = main_window
 
-        main_layout = QVBoxLayout(self)
+        # A. Create a top-level layout for the page
+        page_layout = QVBoxLayout(self)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+
+        # B. Create a scroll area to contain the resizing content
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame) # Make it blend in
+        page_layout.addWidget(scroll_area)
+
+        # C. Create a container widget for the actual page content
+        content_widget = QWidget()
+        content_widget.setObjectName("SetupContent")
+        scroll_area.setWidget(content_widget)
+
+        # D. This is the main layout for the page content, inside the scroll area
+        main_layout = QVBoxLayout(content_widget)
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(20)
 
-        homing_card = self.create_homing_card()
-        main_layout.addWidget(homing_card, 3)
+        # Step 1: Homing
+        step1_card = self.create_step_card("STEP 1: HOMING & AXES SETUP", self.create_step1_content())
+        main_layout.addWidget(step1_card)
 
-        parameters_card = self.create_parameters_card()
-        main_layout.addWidget(parameters_card, 2)
+        # Step 2: Camera Recording
+        step2_card = self.create_step_card("STEP 2: CAMERA RECORDING", self.create_step2_content())
+        main_layout.addWidget(step2_card)
+
+        # Step 3: Parameters
+        step3_card = self.create_step_card("STEP 3: SET PARAMETERS", self.create_step3_content())
+        main_layout.addWidget(step3_card)
+
+        main_layout.addStretch(1)
 
         footer_layout = QHBoxLayout()
         footer_layout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
@@ -125,34 +150,31 @@ class SetupPage(QWidget):
         self.setLayout(main_layout)
         self.apply_styles()
 
-    def _on_setup_completed(self):
-        """Logs the completion and emits the signal."""
-        # Validate Laser Power
-        power = self.laser_power_input.value()
-        if power > 255:
-            self.log_message.emit(f"Laser power out of range ({power}). Clamping to 255.", "WARNING")
-            self.laser_power_input.setValue(255)
-
-        self.log_message.emit("Setup parameters confirmed, proceeding to run job.", "INFO")
-        self.setupCompleted.emit()
-
-    def _on_home_all_clicked(self):
-        """Logs the G-Code for homing all axes."""
-        self.log_message.emit("G28 - Home All Axes", "GCODE")
-
-    def create_homing_card(self):
+    def create_step_card(self, title, content_widget):
+        """Creates a styled card for a step in the setup process."""
         card = QFrame()
         card.setObjectName("Card")
-        card_layout = QHBoxLayout(card)
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(15)
+
+        header = QLabel(title)
+        header.setObjectName("CardHeader")
+        card_layout.addWidget(header)
+
+        card_layout.addWidget(content_widget)
+        
+        return card
+
+    def create_step1_content(self):
+        """Content for the homing and axes setup step."""
+        content_widget = QWidget()
+        card_layout = QHBoxLayout(content_widget)
         card_layout.setSpacing(20)
+        card_layout.setContentsMargins(0,0,0,0)
 
         controls_widget = QWidget()
         controls_layout = QVBoxLayout(controls_widget)
         controls_layout.setSpacing(15)
-
-        header = QLabel("HOMING")
-        header.setObjectName("CardHeader")
-        controls_layout.addWidget(header)
 
         home_all_button = QPushButton("HOME ALL")
         home_all_button.setObjectName("PrimaryButton")
@@ -164,6 +186,7 @@ class SetupPage(QWidget):
         for i, axis in enumerate(axes):
             button = QPushButton(f"Home {axis}")
             button.setObjectName("SecondaryButton")
+            button.clicked.connect(lambda _, a=axis: self._send_gcode_command(f'G28 {a}'))
             axis_grid.addWidget(button, i // 2, i % 2)
         controls_layout.addLayout(axis_grid)
 
@@ -189,17 +212,42 @@ class SetupPage(QWidget):
 
         card_layout.addWidget(controls_widget, 1)
         card_layout.addWidget(diagram_placeholder, 1)
-        return card
+        return content_widget
 
-    def create_parameters_card(self):
-        card = QFrame()
-        card.setObjectName("Card")
-        card_layout = QVBoxLayout(card)
+    def create_step2_content(self):
+        """Content for the camera recording step."""
+        content_widget = QWidget()
+        layout = QHBoxLayout(content_widget)
+        layout.setSpacing(20)
+        layout.setContentsMargins(0,0,0,0)
+
+        camera_placeholder = QLabel("Camera Feed")
+        camera_placeholder.setObjectName("DiagramPlaceholder")
+        camera_placeholder.setAlignment(Qt.AlignCenter)
+        camera_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(camera_placeholder, 2)
+
+        controls_layout = QVBoxLayout()
+        start_recording_button = QPushButton("START RECORDING")
+        start_recording_button.setObjectName("PrimaryButton")
+        controls_layout.addWidget(start_recording_button)
+
+        continue_button = QPushButton("Continue without Recording")
+        continue_button.setObjectName("SecondaryButton")
+        continue_button.clicked.connect(lambda: self.log_message.emit("Continuing without camera recording.", "INFO"))
+        controls_layout.addWidget(continue_button)
+
+        controls_layout.addStretch()
+        layout.addLayout(controls_layout, 1)
+
+        return content_widget
+
+    def create_step3_content(self):
+        """Content for the set parameters step."""
+        content_widget = QWidget()
+        card_layout = QVBoxLayout(content_widget)
         card_layout.setSpacing(15)
-
-        header = QLabel("SET PARAMETERS")
-        header.setObjectName("CardHeader")
-        card_layout.addWidget(header)
+        card_layout.setContentsMargins(0,0,0,0)
 
         form_layout = QFormLayout()
         form_layout.setSpacing(10)
@@ -236,7 +284,36 @@ class SetupPage(QWidget):
         self.advanced_params_button.toggled.connect(self.advanced_frame.setVisible)
         
         card_layout.addStretch()
-        return card
+        return content_widget
+
+
+    def _on_setup_completed(self):
+        """Logs the completion and emits the signal."""
+        # Validate Laser Power
+        power = self.laser_power_input.value()
+        if power > 255:
+            self.log_message.emit(f"Laser power out of range ({power}). Clamping to 255.", "WARNING")
+            self.laser_power_input.setValue(255)
+            power = 255
+        
+        # Store data in the main state manager
+        self.main_window.job_data['rpm'] = self.get_rpm()
+        self.main_window.job_data['power'] = power
+        self.main_window.job_data['feed_rate'] = self.feed_rate_input.value()
+
+        self.log_message.emit("Setup parameters confirmed, proceeding to run job.", "INFO")
+        self.setupCompleted.emit()
+
+    def _send_gcode_command(self, command):
+        """Helper to send a G-code command via the main window."""
+        self.log_message.emit(f"Sending command: {command}", "GCODE")
+        if self.main_window:
+            self.main_window.send_command(command)
+
+    def _on_home_all_clicked(self):
+        """Logs the G-Code for homing all axes."""
+        self._send_gcode_command("G28")
+
 
     def get_rpm(self):
         """Returns the current value from the RPM input."""
@@ -259,16 +336,19 @@ class SetupPage(QWidget):
 
     def apply_styles(self):
         self.setStyleSheet(self.styleSheet() + """
+            QWidget#SetupContent {
+                background-color: #09090b;
+            }
             QFrame#Card {
                 background-color: #18181b; border: 1px solid #27272a; border-radius: 12px; padding: 20px;
             }
             QLabel#CardHeader {
                 font-size: 18pt; font-weight: bold; color: #e4e4e7; padding-bottom: 10px;
             }
-            QLabel, QSpinBox {
+            QLabel, QSpinBox, QDoubleSpinBox {
                 font-size: 14pt; color: #e4e4e7;
             }
-            QSpinBox {
+            QSpinBox, QDoubleSpinBox {
                 background-color: #27272a; border: 1px solid #3f3f46; border-radius: 8px; padding: 8px; min-width: 120px;
             }
             QPushButton {
@@ -287,7 +367,7 @@ class SetupPage(QWidget):
                 background-color: #3b82f6; color: white; padding: 12px 24px;
             }
             QLabel#DiagramPlaceholder {
-                background-color: #27272a; border: 2px dashed #3f3f46; color: #52525b; border-radius: 8px; font-size: 18pt;
+                background-color: #27272a; border: 2px dashed #3f3f46; color: #52525b; border-radius: 8px; font-size: 18pt; min-height: 200px;
             }
             QFrame#ReadoutFrame {
                 border: 1px solid #27272a; border-radius: 8px; background-color: #09090b;
@@ -303,10 +383,27 @@ class SetupPage(QWidget):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    main_window = QWidget()
-    main_window.setGeometry(100, 100, 1200, 900)
-    main_window.setStyleSheet("background-color: #09090b;")
-    layout = QVBoxLayout(main_window)
-    layout.addWidget(SetupPage())
-    main_window.show()
+    
+    # --- Mocking MainWindow for standalone testing ---
+    class MockMainWindow(QWidget):
+        def __init__(self):
+            super().__init__()
+            self.job_data = {}
+            self.setGeometry(100, 100, 1200, 900)
+            self.setStyleSheet("background-color: #09090b;")
+            
+            layout = QVBoxLayout(self)
+            
+            # The setup page needs a "main_window" that has a send_command method
+            # and a job_data dictionary.
+            self.setup_page = SetupPage(main_window=self)
+            self.setup_page.log_message.connect(lambda msg, level: print(f"[{level}] {msg}"))
+            
+            layout.addWidget(self.setup_page)
+            self.show()
+
+        def send_command(self, command):
+            print(f"SENT G-CODE: '{command}'")
+
+    main_window = MockMainWindow()
     sys.exit(app.exec_())

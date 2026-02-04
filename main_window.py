@@ -3,10 +3,10 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QStackedWidget, QLabel, QFrame, QTextEdit, QSplitter,
-    QToolButton, QMessageBox, QInputDialog, QLineEdit
+    QToolButton, QMessageBox, QInputDialog, QLineEdit, QFileDialog
 )
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QSize, QDateTime
+from PyQt5.QtCore import Qt, QSize, QDateTime, pyqtSignal
 
 from backend.ssh_worker import SSHWorker
 from pages.upload_page import UploadPage
@@ -157,11 +157,17 @@ class PlaceholderPage(QWidget):
 
 # --- Main Application Window --- 
 class MainWindow(QMainWindow):
+    upload_complete = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.setObjectName("MainWindow")
         self.setWindowTitle("HeliCAL Control Station")
         self.setGeometry(100, 100, 1600, 900)
+
+        self.job_data = {}
+        self.is_connected = False
+        self.connection_attempt_active = False
 
         central_widget = QWidget()
         root_layout = QVBoxLayout(central_widget)
@@ -182,21 +188,24 @@ class MainWindow(QMainWindow):
         # Right content area with splitter
         splitter = QSplitter(Qt.Vertical)
         
+        # --- Page Creation ---
+        # Pass `self` (the main window) to each page so they can communicate back
         self.stacked_widget = QStackedWidget()
-        self.upload_page = UploadPage()  # Create an instance of the upload page
+        self.upload_page = UploadPage(main_window=self)
+        self.setup_page = SetupPage(main_window=self)
+        self.run_page = RunPage(main_window=self)
+        self.display_page = DisplayPage(main_window=self)
+        
+        # --- Page Connections ---
         self.upload_page.fileConfirmed.connect(self.go_to_machine_setup)
+        self.setup_page.setupCompleted.connect(self.go_to_run_job)
+        self.run_page.runJobStarted.connect(self.go_to_display_page)
+        self.upload_complete.connect(self.run_page.on_upload_complete)
 
         self.stacked_widget.addWidget(PlaceholderPage("HOME"))
-        self.stacked_widget.addWidget(self.upload_page)  # Add the instance
-        self.setup_page = SetupPage() # No command callback here yet
-        self.setup_page.setupCompleted.connect(self.go_to_run_job)
+        self.stacked_widget.addWidget(self.upload_page)
         self.stacked_widget.addWidget(self.setup_page)
-        
-        self.run_page = RunPage()
-        self.run_page.runJobStarted.connect(self.go_to_display_page)
         self.stacked_widget.addWidget(self.run_page)
-        
-        self.display_page = DisplayPage()
         self.stacked_widget.addWidget(self.display_page)
 
         # Connect log signals
@@ -225,14 +234,11 @@ class MainWindow(QMainWindow):
         self.ssh_worker = SSHWorker()
         self.ssh_worker.log_message.connect(self.append_log)
         self.ssh_worker.connection_status.connect(self.handle_connection_status)
-        self.nav_buttons[0].clicked.connect(self.initiate_connection) # "HOME" button triggers connection
+        self.ssh_worker.file_uploaded.connect(self._on_file_uploaded)
 
-        # Initialize Jog Dialog and other components that need to send commands
+        # Initialize Jog Dialog - it can now send commands through the main window
         self.jog_dialog = JogDialog(command_callback=self.send_command, parent=self)
         self.sidebar.jogBtn.clicked.connect(self.open_jog_dialog)
-        
-        # Pass send_command to any other necessary pages
-        self.setup_page.command_callback = self.send_command
 
         # --- Job State Tracking ---
         self.is_job_running = False
@@ -240,42 +246,111 @@ class MainWindow(QMainWindow):
         self.display_page.job_ended.connect(self.handle_job_end)
 
         # --- Data Connections ---
-        # Route sensor data to any component that needs it (like the Jog DRO)
+        # Route sensor data from the display page's worker to other components
         self.display_page.sensor_worker.data_updated.connect(self.route_sensor_data)
         
-        # Start the sensor worker immediately to get live data, simulating a
-        # machine that is "on" and reporting its position.
+        # Start the sensor worker immediately to get live data
         self.display_page.sensor_worker.start()
-        
-    def initiate_connection(self):
-        """Asks for password and starts the SSH worker thread if not already running."""
+
+        # Attempt to auto-connect on startup
+        self.attempt_auto_connect()
+
+    def _on_file_uploaded(self, remote_path):
+        """SLOT: Stores the remote path of the uploaded file for later use."""
+        self.append_log(f"File upload complete. Remote path: {remote_path}", "SUCCESS")
+        self.job_data['remote_video_path'] = remote_path
+        self.upload_complete.emit()
+
+    def attempt_auto_connect(self):
+        """Prompts for password and starts the SSH worker thread."""
         if self.ssh_worker.isRunning():
             self.append_log("SSH worker is already running.", "INFO")
             return
 
-        password, ok = QInputDialog.getText(self, "SSH Password", "Enter password for 'jetson':", QLineEdit.Password)
-        
-        if ok and password:
+        password, ok = QInputDialog.getText(self, "SSH Connection", "Enter password for 'jetson':", QLineEdit.Password)
+
+        if ok:
             self.append_log("Attempting to connect...", "INFO")
-            self.ssh_worker.password = password
+            self.connection_attempt_active = True
+            self.ssh_worker.password = password if password else ""
             self.ssh_worker.start()
-        elif ok:
-            self.append_log("Password cannot be empty.", "WARNING")
         else:
-            self.append_log("Connection attempt cancelled by user.", "INFO")
+            self.append_log("Connection cancelled by user.", "INFO")
+
+    def start_upload(self, local_path):
+        """
+        Starts uploading a file to a predefined location on the remote machine.
+        """
+        if not self.is_connected:
+            self.append_log("Cannot start upload, not connected.", "ERROR")
+            return
+
+        filename = os.path.basename(local_path)
+        # Use a consistent remote directory for job files
+        remote_path = f"{self.ssh_worker.remote_dir}/current_job_video.mp4"
+        
+        self.append_log(f"Starting background upload: {filename} -> {remote_path}", "INFO")
+        self.ssh_worker.upload_file(local_path, remote_path)
+
+    def start_remote_video(self, path):
+        """API for pages. Triggers playback of a video at a given remote path."""
+        if not self.is_connected:
+            self.append_log("Cannot start remote video, not connected.", "ERROR")
+            return
+
+        if not path:
+            self.append_log("Cannot start remote video, no remote path provided.", "ERROR")
+            return
+
+        self.append_log(f"Requesting remote video playback for: {path}", "INFO")
+        self.ssh_worker.play_remote_video(path)
+
+    def upload_video_for_playback(self):
+        """Opens a dialog to upload a video for immediate remote playback."""
+        if not self.is_connected:
+            self.append_log("Connect to the remote machine before uploading.", "WARNING")
+            return
+            
+        local_path, _ = QFileDialog.getOpenFileName(self, "Choose Video to Upload", "", "MP4 files (*.mp4)")
+        if not local_path:
+            return
+
+        filename = os.path.basename(local_path)
+        # This is for immediate playback, so we can use a generic name
+        remote_path = f"{self.ssh_worker.remote_dir}/{filename}"
+        
+        self.append_log(f"Starting direct upload: {local_path} -> {remote_path}", "INFO")
+        
+        def play_after_upload(r_path):
+            self.start_remote_video(r_path)
+            # Disconnect to avoid it firing on subsequent uploads
+            try:
+                self.ssh_worker.file_uploaded.disconnect(play_after_upload)
+            except TypeError:
+                pass # Already disconnected
+
+        self.ssh_worker.file_uploaded.connect(play_after_upload)
+        self.ssh_worker.upload_file(local_path, remote_path)
 
     def handle_connection_status(self, connected):
         """Updates the connection status indicator in the header."""
+        self.is_connected = connected
         if connected:
+            self.connection_attempt_active = False
             self.status_dot.setStyleSheet("background-color: #22c55e; border-radius: 6px;") # Green
             self.status_label.setText("Connected")
+            self.append_log("Connected", "SUCCESS")
         else:
             self.status_dot.setStyleSheet("background-color: #ef4444; border-radius: 6px;") # Red
             self.status_label.setText("Disconnected")
+            if self.connection_attempt_active:
+                QMessageBox.warning(self, "Connection Failed", 
+                                    "Could not connect to Jetson. Check cables and try again.")
+                self.connection_attempt_active = False
             
     def send_command(self, gcode):
         """Global helper to send a G-code command via the SSH worker."""
-        if self.ssh_worker and self.ssh_worker.isRunning():
+        if self.is_connected:
             self.ssh_worker.send_gcode(gcode)
         else:
             self.append_log(f"Blocked command, not connected: {gcode}", "WARNING")
@@ -443,24 +518,20 @@ class MainWindow(QMainWindow):
         Gathers data from the setup page, passes it to the run page,
         and then switches to the Run Job page.
         """
-        # 1. Get data from setup page
-        rpm = self.setup_page.get_rpm()
-        power = self.setup_page.get_laser_power()
-        
-        # 2. Update run page with the data
-        self.run_page.update_summary(rpm, power)
+        # 2. Update run page with the data from the job_data dictionary
+        self.run_page.update_summary()
         
         # 3. Switch to the run page
         run_job_button = self.nav_buttons[3] 
-        run_job_button.click() 
+        run_job_button.click()
 
     def go_to_display_page(self):
         """
         Passes the video file to the display page, switches to it, and starts
         the print sequence.
         """
-        # 1. Get the file path from the upload page
-        video_path = self.upload_page.file_path
+        # 1. Get the file path from the job_data
+        video_path = self.job_data.get('video_path')
         
         # 2. Set the video source on the display page
         if video_path and os.path.exists(video_path):
@@ -479,6 +550,19 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Handle the window close event to ensure graceful shutdown."""
         self.append_log("Closing application...", "INFO")
+
+        if self.is_connected:
+            reply = QMessageBox.question(self, 'Confirm Exit', 
+                                       "Would you like to shut down the remote machine?",
+                                       QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, 
+                                       QMessageBox.Cancel)
+
+            if reply == QMessageBox.Cancel:
+                event.ignore()
+                return
+            elif reply == QMessageBox.Yes:
+                self.ssh_worker.shutdown_remote()
+        
         self.display_page.cleanup()
         self.ssh_worker.stop()
         self.ssh_worker.wait() # Wait for thread to finish
