@@ -10,7 +10,7 @@ Functions in this module are safe to call from worker threads, tests, or headles
 """
 
 import os
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import numpy as np
 import matplotlib
@@ -188,7 +188,7 @@ def save_projection_images(output_dir: str, sino: 'Sinogram', recon_array: np.nd
     return sino_path, recon_path
 
 
-def save_angle_montage(output_dir: str, sino: 'Sinogram', n_cols: int = 10):
+def save_angle_montage(output_dir: str, sino: 'Sinogram', n_cols: int = 10) -> str:
     """Build a tiled PNG that samples the projection angles so demo users see motion."""
     os.makedirs(output_dir, exist_ok=True)
     data = np.asarray(sino.array)
@@ -244,6 +244,7 @@ def save_angle_montage(output_dir: str, sino: 'Sinogram', n_cols: int = 10):
     fig.savefig(out, dpi=200)
     plt.close(fig)
     log(f"Saved {out}")
+    return out
 
 
 def gcode_from_slice(img: np.ndarray, cfg: dict) -> str:
@@ -306,6 +307,119 @@ def write_gcode_from_recon_slice(output_dir: str, recon_array: np.ndarray, cfg: 
         f.write(code)
     log(f"Saved {out_path}")
     return out_path
+
+
+JOB_PLAN_DEFAULTS = {
+    "start_r": 0.0,
+    "start_t": 0.0,
+    "start_z": 0.0,
+    "a_rpm": 9,
+    "warmup_ms": 10000,
+    "exposure_ms": 0,
+    "include_video": True,
+    "include_metrology_wait": True,
+}
+
+
+def _job_plan_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge UI/job settings with defaults so downstream helpers can rely on keys."""
+    job_cfg = dict(JOB_PLAN_DEFAULTS)
+    incoming = cfg.get("job_plan") if isinstance(cfg, dict) else None
+    if isinstance(incoming, dict):
+        for key, value in incoming.items():
+            if value is None:
+                continue
+            job_cfg[key] = value
+    return job_cfg
+
+
+def _format_start_move(plan: Dict[str, Any]) -> Optional[str]:
+    """Construct the start move G0 line if any axis offsets were provided."""
+    parts = ["G0"]
+    has_value = False
+    for axis, key in (("R", "start_r"), ("T", "start_t"), ("Z", "start_z")):
+        val = plan.get(key)
+        if val is None:
+            continue
+        try:
+            fval = float(val)
+        except (TypeError, ValueError):
+            continue
+        parts.append(f"{axis}{fval:.3f}")
+        has_value = True
+    if not has_value:
+        return None
+    return " ".join(parts)
+
+
+def write_helical_job_script(output_dir: str, cfg: dict, asset_info: Dict[str, Optional[str]]) -> str:
+    """
+    Create a real job script that sequences start/end macros and references generated assets.
+    Returns the path to the saved .gcode plan.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    plan = _job_plan_config(cfg or {})
+    lines = [
+        ";; ------------------------------------------------------------",
+        ";; HeliCAL Control Station Job Script",
+        ";; Generated automatically from gui_test.py pipeline.",
+        f";; STL Source: {asset_info.get('stl') or 'n/a'}",
+    ]
+    if asset_info.get("video"):
+        lines.append(f";; Video Asset: {asset_info['video']}")
+    if asset_info.get("sinogram_png"):
+        lines.append(f";; Sinogram Preview: {asset_info['sinogram_png']}")
+    if asset_info.get("recon_png"):
+        lines.append(f";; Reconstruction Slice: {asset_info['recon_png']}")
+    if asset_info.get("montage_png"):
+        lines.append(f";; Angle Montage: {asset_info['montage_png']}")
+    if asset_info.get("toy_gcode"):
+        lines.append(f";; Legacy Toy G-code: {asset_info['toy_gcode']}")
+    lines += [
+        ";; ------------------------------------------------------------",
+        "M17 ; Motors ON",
+        "G28 ; Home R/T/Z",
+    ]
+
+    start_move = _format_start_move(plan)
+    if start_move:
+        lines.append(f"{start_move} ; Move to job zero")
+    lines.append("G92 ; Zero axes")
+    lines.append(f"G33 A{int(plan['a_rpm'])} ; Spin-up rotation")
+    lines.append("G5 ; Wait for RPM steady-state")
+    if plan.get("warmup_ms", 0):
+        lines.append(f"G4 P{int(plan['warmup_ms'])} ; Warm-up dwell before exposure")
+
+    if plan.get("include_video"):
+        lines.append("M200 ; Projector ON / configure")
+        lines.append("M202 ; Play projector feed")
+
+    if plan.get("exposure_ms", 0):
+        lines.append(f"G4 P{int(plan['exposure_ms'])} ; Exposure dwell")
+
+    if plan.get("include_metrology_wait", True):
+        lines.append("G6 ; Wait for metrology completion")
+
+    if plan.get("include_video"):
+        lines.append("M203 ; Pause / stop projector video")
+        lines.append("M201 ; Projector OFF")
+
+    lines += [
+        "",
+        ";; --- End Sequence ---",
+        "G33 A0 ; Stop rotation",
+        "G28 ; Re-home before shutdown",
+        "M18 R T Z ; Disable motors",
+        ";; ------------------------------------------------------------",
+        ";; End of job script",
+        ";; ------------------------------------------------------------",
+    ]
+
+    path = os.path.join(output_dir, "helical_job_plan.gcode")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    log(f"Saved {path}")
+    return path
 
 
 def save_reconstruction_video(output_dir: str, sino: 'Sinogram') -> str:

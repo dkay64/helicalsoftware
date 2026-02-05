@@ -1,6 +1,10 @@
 #pragma once
+#ifndef HELICAL_HELPER_H
+#define HELICAL_HELPER_H
 
 #include <cstdint>
+
+#include "TicController.h"
 
 // Initializes the raw terminal listener that watches for space/enter presses.
 void init_key_listener();
@@ -26,14 +30,16 @@ bool wait_or_abort(int total_ms, int chunk_ms = 50);
 void restore_terminal();
 
 // Homing helpers for paired axes.
-void zeroAxisPair(class TicController &A,
-                  class TicController &B,
+void zeroAxisPair(TicController &A,
+                  TicController &B,
                   uint8_t homeDir,
                   int32_t finalOffset);
 
-void zeroAxisPair(class TicController &A,
-                  class TicController &B,
-                  class TicController &C,
-                  class TicController &D,
+void zeroAxisPair(TicController &A,
+                  TicController &B,
+                  TicController &C,
+                  TicController &D,
                   uint8_t homeDir,
                   int32_t finalOffset);
+
+#endif  // HELICAL_HELPER_H

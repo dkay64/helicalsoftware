@@ -18,6 +18,9 @@
 #include <unistd.h>
 #include <queue>
 #include <iomanip>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 // Sample commmand - for some reason z comm waits for us to press enter to be executed
 /* G91 
@@ -193,8 +196,18 @@ int main() {
     Esp32UART uart("/dev/ttyTHS1", 115200);
 
     std::queue<std::string> commandQueue;
-    bool executingQueue = false; // variables for when multiple commands are queued up
+    std::mutex queue_mutex;
+    std::condition_variable queue_cv;
+    std::atomic<bool> queue_busy{false};
     bool halt_requested = false;
+    bool shutting_down = false;
+    bool exit_requested = false;
+
+    auto clear_command_queue = [&]() {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        std::queue<std::string> empty;
+        std::swap(commandQueue, empty);
+    };
 
     // Bring motors online
     for (auto* m : all) {
@@ -234,12 +247,6 @@ int main() {
 
 
 //rapid cap ceiling
-    auto set_rapid_caps = [&](){
-        AX_R.setMaxSpeed(STEPPER_RT_MAXVELOCITY);
-        AX_T.setMaxSpeed(STEPPER_RT_MAXVELOCITY);
-        AX_Z.setMaxSpeed(STEPPER_Z_MAXVELOCITY);
-    };
-
     auto try_apply_axis_speed = [&](char axis, const AxisGroup& grp) -> bool {
         const uint32_t cap = axis_max_speed(axis);
         double req = (F_axis.count(axis) ? F_axis[axis] : F_global);
@@ -364,75 +371,163 @@ int main() {
         motors_disable(std::vector<char>{'R','T','Z'});
     };
 
-    // ===== 4) Command loop =====
-    cout << "G-code ready. Examples: `G0 R100 T100 Z100`, `G1 Z-200 FR120000`, `G33 A9`, `M114`, `M112`.\n";
-    cout << "Comments with ';' are ignored. Ctrl-D to exit.\n";
-    
-    string raw;
-    while (true) {
-        cout << "> " << flush;
-        if (!std::getline(cin, raw)) break; // User pressed Ctrl-D
-        string line = strip_comment_and_trim(raw);
-        if (line.empty()) continue;
+    auto perform_shutdown = [&](bool restore_term) {
+        dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
+        led.stop();
+        if (restore_term) {
+            restore_terminal();
+        }
+        shutting_down = true;
+        clear_command_queue();
+        queue_cv.notify_all();
+        exit_requested = true;
+    };
 
-        string upper_line = line;
-        std::transform(upper_line.begin(), upper_line.end(), upper_line.begin(), ::toupper);
-        if (executingQueue && upper_line == "M999") {
-            trigger_estop();
-            std::queue<std::string> empty;
-            std::swap(commandQueue, empty);
-            cout << "[HALT] Queue cleared while current command stops.\n";
-            continue;
+    auto handle_immediate_command = [&](const std::string& cmd)->bool {
+        istringstream iss(cmd);
+        string head;
+        if (!(iss >> head)) return false;
+        std::transform(head.begin(), head.end(), head.begin(), ::toupper);
+        if (head.empty() || head[0] != 'M') return false;
+        int mnum = 0;
+        try {
+            mnum = stoi(head.substr(1));
+        } catch (...) {
+            return false;
         }
 
-        commandQueue.push(line);
-        if (executingQueue) {
-            cout << "Command queued.\n";
-            continue;
-        }
-        executingQueue = true;
-        while (!commandQueue.empty())
-        {
-            // Check for abort *before* processing a new command
-            if (abort_requested()) {
-                 cout << "ABORT: Clearing command queue.\n";
-                 std::queue<std::string> empty; //Nuke the queue
-                 std::swap(commandQueue, empty);
-                 // Trigger emergency stop
-                 motors_disable();
-                 dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
-                 led.stop();
-                 break; 
+        switch (mnum) {
+            case 30: {
+                cout << "M30: Program complete. Exiting G-Code Mode.\n";
+                motors_disable();
+                perform_shutdown(true);
+                return true;
             }
-
-            string cmd_from_queue = commandQueue.front();
-            commandQueue.pop();
-            cout << "Executing: " << cmd_from_queue << "\n";
-
-            // Tokenize
-            istringstream iss(cmd_from_queue);
-            string head; iss >> head;
-            if (head.empty()) continue; // Skip empty commands from queue
-            std::transform(head.begin(), head.end(), head.begin(), ::toupper);
-
-            auto bail_if_abort = [&](){
-                if (abort_requested()) throw runtime_error("EMERGENCY STOP (aborted)");
-            };
-            auto parse_axis_args = [&](istringstream& stream) {
-                vector<char> axes;
+            case 112: {
+                cout << "M112: EMERGENCY STOP.\n";
+                trigger_estop();
+                perform_shutdown(false);
+                return true;
+            }
+            case 999: {
+                cout << "M999: Halt and hold all axes.\n";
+                trigger_estop();
+                clear_command_queue();
+                queue_cv.notify_all();
+                return true;
+            }
+            case 200:
+                led.configure();
+                led.current(450);
+                dlp.configure();
+                cout << "M200: Projector ON (configured).\n";
+                return true;
+            case 201:
+                dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
+                led.stop();
+                cout << "M201: Projector OFF.\n";
+                return true;
+            case 202:
+                system("xdotool search --name ProjectorVideo windowactivate --sync key space");
+                cout << "M202: Projector video PLAY/TOGGLE.\n";
+                return true;
+            case 203:
+                system("xdotool search --name ProjectorVideo windowactivate --sync key space");
+                cout << "M203: Projector video PAUSE/TOGGLE.\n";
+                return true;
+            case 204:
+                system("xdotool search --name ProjectorVideo windowactivate --sync key home");
+                cout << "M204: Projector video RESTART.\n";
+                return true;
+            case 205: {
+                double current_ma = -1.0;
                 string token;
-                while (stream >> token) {
-                    for (char ch : token) {
-                        ch = static_cast<char>(std::toupper(ch));
-                        if (ch == 'R' || ch == 'T' || ch == 'Z' || ch == 'A') {
-                            axes.push_back(ch);
+                while (iss >> token) {
+                    if (token.empty()) continue;
+                    if (token[0] == 'S' || token[0] == 's') {
+                        try {
+                            current_ma = stod(token.substr(1));
+                        } catch (...) {
+                            current_ma = -1.0;
                         }
                     }
                 }
-                return axes;
-            };
+                if (current_ma < 0) {
+                    cout << "M205: Provide current via S parameter (e.g., M205 S450).\n";
+                    return true;
+                }
+                if (current_ma > 30000) {
+                    cout << "M205: Requested " << current_ma << " mA exceeds 30000 mA limit.\n";
+                    return true;
+                }
+                led.current(static_cast<int>(current_ma));
+                cout << "M205: LED current set to " << static_cast<int>(current_ma) << " mA.\n";
+                return true;
+            }
+            case 210: {
+                Esp32UART::ImuSample sample;
+                if (uart.getImuSample(sample)) {
+                    print_imu_sample(sample);
+                } else {
+                    cout << "[IMU] Failed to retrieve sample.\n";
+                }
+                return true;
+            }
+            case 211: {
+                cout << "M211: Requesting IMU calibration...\n";
+                if (uart.requestImuCalibration()) {
+                    cout << "[IMU] Calibration complete.\n";
+                } else {
+                    cout << "[IMU] Calibration failed or timed out.\n";
+                }
+                return true;
+            }
+            default:
+                break;
+        }
+        return false;
+    };
 
-            try {
+    // ===== 4) Command loop =====
+    cout << "G-code ready. Examples: `G0 R100 T100 Z100`, `G1 Z-200 FR120000`, `G33 A9`, `M114`, `M112`.\n";
+    cout << "Comments with ';' are ignored. Ctrl-D to exit.\n";
+
+    auto process_command = [&](const std::string& cmd_from_queue) {
+        if (abort_requested()) {
+            cout << "ABORT: Clearing command queue.\n";
+            clear_command_queue();
+            motors_disable();
+            dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
+            led.stop();
+            return;
+        }
+
+        cout << "Executing: " << cmd_from_queue << "\n";
+
+        // Tokenize
+        istringstream iss(cmd_from_queue);
+        string head; iss >> head;
+        if (head.empty()) return; // Skip empty commands from queue
+        std::transform(head.begin(), head.end(), head.begin(), ::toupper);
+
+        auto bail_if_abort = [&](){
+            if (abort_requested()) throw runtime_error("EMERGENCY STOP (aborted)");
+        };
+        auto parse_axis_args = [&](istringstream& stream) {
+            vector<char> axes;
+            string token;
+            while (stream >> token) {
+                for (char ch : token) {
+                    ch = static_cast<char>(std::toupper(ch));
+                    if (ch == 'R' || ch == 'T' || ch == 'Z' || ch == 'A') {
+                        axes.push_back(ch);
+                    }
+                }
+            }
+            return axes;
+        };
+
+        try {
                 // ===== M-codes =====
                 if (head[0] == 'M') {
                     int mnum = stoi(head.substr(1));
@@ -446,13 +541,9 @@ int main() {
                         }
                         case 112:
                             cout << "M112: EMERGENCY STOP.\n";
-                            AX_R.haltAndHold();
-                            AX_T.haltAndHold();
-                            AX_Z.haltAndHold();
-                            motors_disable(std::vector<char>{'R','T','Z'});
-                            dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
-                            led.stop();
-                            return 0; // This will exit the program
+                            trigger_estop();
+                            perform_shutdown(false);
+                            return;
                         case 114: { // report positions/targets
                             auto report = [&](const char* name, TicController& c) {
                                 try {
@@ -493,11 +584,9 @@ int main() {
                         }
                         case 30: {//M30 : End program
                             cout << "M30: Program complete. Exiting G-Code Mode.\n";
-                            motors_disable(); 
-                            dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
-                            led.stop();
-                            restore_terminal();
-                            return 0; // This will exit the program
+                            motors_disable();
+                            perform_shutdown(true);
+                            return;
                         }
                         case 200: led.configure();led.current(450);dlp.configure(); cout << "M200: Projector ON (configured).\n"; break;
                         case 205: {
@@ -553,13 +642,13 @@ int main() {
                         }
                         default:  cerr << "Unknown M" << mnum << "\n"; break;
                     }
-                    continue; // M-codes don't need to wait for motion
+                    return; // M-codes don't need to wait for motion
                 }
 
                 // ===== G-codes =====
                 if (head[0] != 'G') {
                     cerr << "Unknown command head: " << head << "\n";
-                    continue;
+                    return;
                 }
 
                 int gnum = stoi(head.substr(1));
@@ -778,76 +867,128 @@ int main() {
                         break;
                 }
                 bail_if_abort();
+        } catch (const std::exception& e) {
+            cerr << "!! ERROR: " << e.what() << "\n";
+            // This will stop on an error. You could 'continue'
+            // to the next command instead if you prefer.
+        }
+
+        bool wait_loop_error = false; // Add a flag
+        if (!halt_requested) {
+            try {
+                while (tic_tw_r.getCurrentPosition() != tic_tw_r.getTargetPosition() ||
+                       tic_tw_t.getCurrentPosition() != tic_tw_t.getTargetPosition() ||
+                       tic_tw_z1.getCurrentPosition() != tic_tw_z1.getTargetPosition())
+                {
+                    if (abort_requested())
+                    {
+                        cout << "ABORT: Halting all motion.\n";
+                        // Send an immediate halt command
+                        AX_R.haltAndHold();
+                        AX_T.haltAndHold();
+                        AX_Z.haltAndHold();
+                        break; // Exit the wait loop
+                    }
+                    
+                    // Sleep for 20ms to avoid busy-waiting
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
             } catch (const std::exception& e) {
-                cerr << "!! ERROR: " << e.what() << "\n";
-                // This will stop on an error. You could 'continue'
-                // to the next command instead if you prefer.
+                cerr << "!! CRITICAL I2C ERROR during wait loop: " << e.what() << "\n";
+                cerr << "!! Halting motion and clearing queue for safety. !!\n";
+                AX_R.haltAndHold();
+                AX_T.haltAndHold();
+                AX_Z.haltAndHold();
+                wait_loop_error = true; // Set the flag
+            }
+        }
+
+        // If the error flag was set, nuke the queue and return
+        if (wait_loop_error) {
+            clear_command_queue();
+            return;
+        }
+        
+        if (halt_requested) {
+            cout << "[HALT] Current command stopped.\n";
+            return;
+        }
+
+        cout << "--- Command complete ---" << endl;
+    };
+
+    std::thread command_worker([&]() {
+        while (true) {
+            std::string cmd_from_queue;
+            {
+                std::unique_lock<std::mutex> lock(queue_mutex);
+                queue_cv.wait(lock, [&]{ return shutting_down || !commandQueue.empty(); });
+                if (shutting_down && commandQueue.empty()) {
+                    break;
+                }
+                cmd_from_queue = std::move(commandQueue.front());
+                commandQueue.pop();
+                queue_busy.store(true);
             }
 
-            bool wait_loop_error = false; // Add a flag
-            if (!halt_requested) {
-                try {
-                    while (tic_tw_r.getCurrentPosition() != tic_tw_r.getTargetPosition() ||
-                           tic_tw_t.getCurrentPosition() != tic_tw_t.getTargetPosition() ||
-                           tic_tw_z1.getCurrentPosition() != tic_tw_z1.getTargetPosition())
-                    {
-                        if (abort_requested())
-                        {
-                            cout << "ABORT: Halting all motion.\n";
-                            // Send an immediate halt command
-                            AX_R.haltAndHold();
-                            AX_T.haltAndHold();
-                            AX_Z.haltAndHold();
-                            break; // Exit the wait loop
-                        }
-                        
-                        // Sleep for 20ms to avoid busy-waiting
-                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                    }
-                } catch (const std::exception& e) {
-                    cerr << "!! CRITICAL I2C ERROR during wait loop: " << e.what() << "\n";
-                    cerr << "!! Halting motion and clearing queue for safety. !!\n";
-                    AX_R.haltAndHold();
-                    AX_T.haltAndHold();
-                    AX_Z.haltAndHold();
-                    wait_loop_error = true; // Set the flag
+            process_command(cmd_from_queue);
+
+            bool should_print_ready = false;
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex);
+                if (commandQueue.empty()) {
+                    queue_busy.store(false);
+                    should_print_ready = true;
                 }
             }
 
-            // If the error flag was set, nuke the queue and break
-            if (wait_loop_error) {
-                 std::queue<std::string> empty; // Nuke the queue
-                 std::swap(commandQueue, empty);
-                 break; // Break out of the 'while (!commandQueue.empty())' loop
+            if (should_print_ready && !halt_requested) {
+                cout << "Queue empty. Ready for new commands.\n";
             }
-            
+
             if (halt_requested) {
-                cout << "[HALT] Current command stopped.\n";
-                break;
+                clear_abort_request();
+                halt_requested = false;
+                cout << "[HALT] System halted. Re-enable motors (M17) after resolving the issue.\n";
             }
-
-            cout << "--- Command complete ---" << endl;
-
-        } // --- End of CHANGE 4 (processor loop) ---
-
-        // --- CHANGE 8: Reset the flag ---
-        // The queue is empty, so we are no longer processing.
-        executingQueue = false;
-
-        if (halt_requested) {
-            std::queue<std::string> empty;
-            std::swap(commandQueue, empty);
-            clear_abort_request();
-            halt_requested = false;
-            cout << "[HALT] System halted. Re-enable motors (M17) after resolving the issue.\n";
         }
-        
-        // Only print "ready" if the queue just finished
-        if (!line.empty()) {
-            cout << "Queue empty. Ready for new commands.\n";
+    });
+
+    string raw;
+    while (!exit_requested) {
+        cout << "> " << flush;
+        if (!std::getline(cin, raw)) break; // User pressed Ctrl-D
+        string line = strip_comment_and_trim(raw);
+        if (line.empty()) continue;
+
+        string upper_line = line;
+        std::transform(upper_line.begin(), upper_line.end(), upper_line.begin(), ::toupper);
+        if (handle_immediate_command(line)) {
+            if (exit_requested) break;
+            continue;
+        }
+        if (queue_busy.load() && upper_line == "M999") {
+            trigger_estop();
+            clear_command_queue();
+            cout << "[HALT] Queue cleared while current command stops.\n";
+            queue_cv.notify_all();
+            continue;
         }
 
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex);
+            bool busy = queue_busy.load();
+            commandQueue.push(line);
+            if (busy) {
+                cout << "Command queued.\n";
+            }
+        }
+        queue_cv.notify_one();
     }
+
+    shutting_down = true;
+    queue_cv.notify_all();
+    command_worker.join();
 
     // ===== 5) Cleanup =====
     cout << "Shutting down...\n";
