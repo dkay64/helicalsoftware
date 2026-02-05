@@ -267,7 +267,7 @@ class MainWindow(QMainWindow):
             self.append_log("SSH worker is already running.", "INFO")
             return
 
-        password, ok = QInputDialog.getText(self, "SSH Connection", "Enter password for 'jetson':", QLineEdit.Password)
+        password, ok = QInputDialog.getText(self, "SSH Connection", "Enter password for 'jacob':", QLineEdit.Password)
 
         if ok:
             self.append_log("Attempting to connect...", "INFO")
