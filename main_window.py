@@ -141,6 +141,40 @@ def load_stylesheet(app):
         color: #22c55e; /* Green */
         font-weight: bold;
     }
+    
+    /* --- Global Dialogs (Pop-ups) --- */
+    QDialog, QMessageBox, QInputDialog {
+        background-color: #18181b;
+        color: #e4e4e7;
+    }
+    /* Labels inside Dialogs */
+    QDialog QLabel, QMessageBox QLabel, QInputDialog QLabel {
+        color: #e4e4e7;
+        background-color: transparent;
+    }
+    /* Buttons inside Dialogs */
+    QDialog QPushButton, QMessageBox QPushButton, QInputDialog QPushButton {
+        background-color: #3f3f46;
+        border: 1px solid #52525b;
+        border-radius: 6px;
+        color: white;
+        padding: 6px 16px;
+        min-width: 70px;
+    }
+    QDialog QPushButton:hover, QMessageBox QPushButton:hover, QInputDialog QPushButton:hover {
+        background-color: #52525b;
+    }
+    QDialog QPushButton:pressed {
+        background-color: #27272a;
+    }
+    /* Input Fields (e.g. Password Prompt) */
+    QInputDialog QLineEdit {
+        background-color: #27272a;
+        border: 1px solid #3f3f46;
+        border-radius: 4px;
+        color: white;
+        padding: 6px;
+    }
     """
     app.setStyleSheet(style_sheet)
 
@@ -339,14 +373,31 @@ class MainWindow(QMainWindow):
             self.connection_attempt_active = False
             self.status_dot.setStyleSheet("background-color: #22c55e; border-radius: 6px;") # Green
             self.status_label.setText("Connected")
+            self.conn_btn.setText("DISCONNECT")
             self.append_log("Connected", "SUCCESS")
         else:
             self.status_dot.setStyleSheet("background-color: #ef4444; border-radius: 6px;") # Red
             self.status_label.setText("Disconnected")
+            self.conn_btn.setText("CONNECT")
             if self.connection_attempt_active:
                 QMessageBox.warning(self, "Connection Failed", 
                                     "Could not connect to Jetson. Check cables and try again.")
                 self.connection_attempt_active = False
+
+    def toggle_connection(self):
+        """Handles the logic for the Connect/Disconnect button."""
+        if self.is_connected:
+            reply = QMessageBox.question(self, 'Confirm Disconnect', 
+                                       "Are you sure you want to disconnect from the Jetson?",
+                                       QMessageBox.Yes | QMessageBox.No,
+                                       QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self.append_log("Disconnecting...", "INFO")
+                self.ssh_worker.stop()
+                # Manually update status as stop() might not emit a signal
+                self.handle_connection_status(False)
+        else:
+            self.attempt_auto_connect()
             
     def send_command(self, gcode):
         """Global helper to send a G-code command via the SSH worker."""
@@ -415,8 +466,21 @@ class MainWindow(QMainWindow):
         self.status_dot.setFixedSize(12, 12)
         
         self.status_label = QLabel("Disconnected")
+        
+        self.conn_btn = QPushButton("CONNECT")
+        self.conn_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27272a; border: 1px solid #3f3f46; color: white; 
+                border-radius: 4px; padding: 4px 12px; font-weight: bold; font-size: 12px;
+            }
+            QPushButton:hover { background-color: #3f3f46; }
+        """)
+        self.conn_btn.clicked.connect(self.toggle_connection)
+
         status_layout.addWidget(self.status_dot)
         status_layout.addWidget(self.status_label)
+        status_layout.addSpacing(15)
+        status_layout.addWidget(self.conn_btn)
         status_layout.setSpacing(10)
         
         # Set initial state
