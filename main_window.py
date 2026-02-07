@@ -199,6 +199,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("HeliCAL Control Station")
         self.setGeometry(100, 100, 1600, 900)
 
+        # Early initialization of output_log to prevent race condition during startup
+        self.output_log = QTextEdit()
+
         self.job_data = {}
         self.is_connected = False
         self.connection_attempt_active = False
@@ -369,20 +372,46 @@ class MainWindow(QMainWindow):
     def handle_connection_status(self, connected):
         """Updates the connection status indicator in the header."""
         self.is_connected = connected
+        self.conn_btn.setEnabled(True) # Re-enable button after attempt finishes
+
         if connected:
             self.connection_attempt_active = False
-            self.status_dot.setStyleSheet("background-color: #22c55e; border-radius: 6px;") # Green
-            self.status_label.setText("Connected")
-            self.conn_btn.setText("DISCONNECT")
+            self.conn_btn.setText("● DISCONNECT")
+            self.conn_btn.setStyleSheet("""
+                QPushButton {
+                    color: #22c55e;
+                    background-color: #18181b;
+                    border: 1px solid #059669;
+                    border-radius: 6px;
+                    padding: 6px 16px;
+                    font-weight: bold;
+                }
+                QPushButton:hover { background-color: #27272a; }
+            """)
+            self.conn_btn.setToolTip("Click to disconnect session")
             self.append_log("Connected", "SUCCESS")
         else:
-            self.status_dot.setStyleSheet("background-color: #ef4444; border-radius: 6px;") # Red
-            self.status_label.setText("Disconnected")
-            self.conn_btn.setText("CONNECT")
+            self.conn_btn.setText("○ CONNECT")
+            self.conn_btn.setStyleSheet("""
+                QPushButton {
+                    color: #e4e4e7;
+                    background-color: #18181b;
+                    border: 1px solid #52525b;
+                    border-radius: 6px;
+                    padding: 6px 16px;
+                    font-weight: bold;
+                }
+                QPushButton:hover { background-color: #27272a; }
+            """)
+            self.conn_btn.setToolTip("Click to retry connection")
+            if self.is_connected is False and not self.connection_attempt_active:
+                 self.append_log("Disconnected", "INFO")
+
             if self.connection_attempt_active:
                 QMessageBox.warning(self, "Connection Failed", 
                                     "Could not connect to Jetson. Check cables and try again.")
                 self.connection_attempt_active = False
+                self.append_log("Connection failed.", "ERROR")
 
     def toggle_connection(self):
         """Handles the logic for the Connect/Disconnect button."""
@@ -397,6 +426,19 @@ class MainWindow(QMainWindow):
                 # Manually update status as stop() might not emit a signal
                 self.handle_connection_status(False)
         else:
+            # Set connecting state
+            self.conn_btn.setText("◌ CONNECTING...")
+            self.conn_btn.setEnabled(False)
+            self.conn_btn.setStyleSheet("""
+                QPushButton {
+                    color: #facc15;
+                    background-color: #18181b;
+                    border: 1px solid #ca8a04;
+                    border-radius: 6px;
+                    padding: 6px 16px;
+                    font-weight: bold;
+                }
+            """)
             self.attempt_auto_connect()
             
     def send_command(self, gcode):
@@ -460,28 +502,9 @@ class MainWindow(QMainWindow):
 
         title = QLabel("HeliCAL")
         title.setObjectName("Header_Title")
-        
-        status_layout = QHBoxLayout()
-        self.status_dot = QLabel()
-        self.status_dot.setFixedSize(12, 12)
-        
-        self.status_label = QLabel("Disconnected")
-        
-        self.conn_btn = QPushButton("CONNECT")
-        self.conn_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #27272a; border: 1px solid #3f3f46; color: white; 
-                border-radius: 4px; padding: 4px 12px; font-weight: bold; font-size: 12px;
-            }
-            QPushButton:hover { background-color: #3f3f46; }
-        """)
-        self.conn_btn.clicked.connect(self.toggle_connection)
 
-        status_layout.addWidget(self.status_dot)
-        status_layout.addWidget(self.status_label)
-        status_layout.addSpacing(15)
-        status_layout.addWidget(self.conn_btn)
-        status_layout.setSpacing(10)
+        self.conn_btn = QPushButton("CONNECT")
+        self.conn_btn.clicked.connect(self.toggle_connection)
         
         # Set initial state
         self.handle_connection_status(False) 
@@ -492,7 +515,7 @@ class MainWindow(QMainWindow):
         
         header_layout.addWidget(title)
         header_layout.addStretch()
-        header_layout.addLayout(status_layout)
+        header_layout.addWidget(self.conn_btn)
         header_layout.addSpacing(20)
         header_layout.addWidget(self.emergency_stop_button)
         return header_widget
@@ -576,8 +599,8 @@ class MainWindow(QMainWindow):
         title.setObjectName("Log_Panel_Title")
         title.setAlignment(Qt.AlignCenter)
 
-        log_display = QTextEdit()
-        self.output_log = log_display # Assign to self
+        # Use the pre-initialized log_display
+        log_display = self.output_log
         log_display.setObjectName("Log_Display")
         log_display.setReadOnly(True)
 
