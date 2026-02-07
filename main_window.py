@@ -227,8 +227,8 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(body_widget, 1)
         self.setCentralWidget(central_widget)
         
-        # Connect the global emergency stop button to the display page's stop sequence
-        self.emergency_stop_button.clicked.connect(self.display_page.stop_print_sequence)
+        # Connect the global emergency stop button to the trigger
+        self.emergency_stop_button.clicked.connect(self.trigger_emergency_stop)
 
         # --- Backend Integration ---
         self.ssh_worker = SSHWorker()
@@ -422,8 +422,9 @@ class MainWindow(QMainWindow):
         # Set initial state
         self.handle_connection_status(False) 
 
-        self.emergency_stop_button = QPushButton("STOP")
+        self.emergency_stop_button = QPushButton("E-STOP")
         self.emergency_stop_button.setObjectName("Stop_Button")
+        self.emergency_stop_button.setToolTip("Immediately halts all machine operations (M112).\nThis is not a pause and requires a full reset.")
         
         header_layout.addWidget(title)
         header_layout.addStretch()
@@ -431,6 +432,25 @@ class MainWindow(QMainWindow):
         header_layout.addSpacing(20)
         header_layout.addWidget(self.emergency_stop_button)
         return header_widget
+
+    def trigger_emergency_stop(self):
+        """Immediately halts the machine and alerts the user."""
+        self.append_log("EMERGENCY STOP ACTIVATED", "ERROR")
+        
+        # 1. Primary Action: Halt the machine via G-code
+        self.send_command("M112")
+        
+        # 2. Secondary Action: Stop local timers/sequences
+        self.display_page.stop_print_sequence()
+        
+        # 3. User Feedback: Display a critical message
+        msg_box = QMessageBox()
+        msg_box.setIcon(QMessageBox.Critical)
+        msg_box.setWindowTitle("EMERGENCY STOP")
+        msg_box.setText("EMERGENCY STOP ACTIVATED")
+        msg_box.setInformativeText("The machine has been sent the M112 Halt command. This is not a pause. A full reset is required.")
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.exec_()
 
     def create_sidebar(self):
         sidebar_widget = QFrame()
@@ -446,7 +466,7 @@ class MainWindow(QMainWindow):
         # Tuples of (Text, icon_name)
         button_defs = [
             ("HOME", "home"), ("UPLOAD", "upload"), ("SETUP", "machine_setup"),
-            ("RUN", "play"), ("DISPLAY", "display")
+            ("RUN PRINT", "play"), ("DISPLAY", "display")
         ]
         
         self.nav_buttons = []

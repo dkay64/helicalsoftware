@@ -129,12 +129,8 @@ class SetupPage(QWidget):
         step1_card = self.create_step_card("STEP 1: HOMING & AXES SETUP", self.create_step1_content())
         main_layout.addWidget(step1_card)
 
-        # Step 2: Camera Recording
-        step2_card = self.create_step_card("STEP 2: CAMERA RECORDING", self.create_step2_content())
-        main_layout.addWidget(step2_card)
-
-        # Step 3: Parameters
-        step3_card = self.create_step_card("STEP 3: SET PARAMETERS", self.create_step3_content())
+        # Step 2: Parameters
+        step3_card = self.create_step_card("STEP 2: SET PARAMETERS", self.create_step3_content())
         main_layout.addWidget(step3_card)
 
         main_layout.addStretch(1)
@@ -212,34 +208,6 @@ class SetupPage(QWidget):
 
         card_layout.addWidget(controls_widget, 1)
         card_layout.addWidget(diagram_placeholder, 1)
-        return content_widget
-
-    def create_step2_content(self):
-        """Content for the camera recording step."""
-        content_widget = QWidget()
-        layout = QHBoxLayout(content_widget)
-        layout.setSpacing(20)
-        layout.setContentsMargins(0,0,0,0)
-
-        camera_placeholder = QLabel("Camera Feed")
-        camera_placeholder.setObjectName("DiagramPlaceholder")
-        camera_placeholder.setAlignment(Qt.AlignCenter)
-        camera_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        layout.addWidget(camera_placeholder, 2)
-
-        controls_layout = QVBoxLayout()
-        start_recording_button = QPushButton("START RECORDING")
-        start_recording_button.setObjectName("PrimaryButton")
-        controls_layout.addWidget(start_recording_button)
-
-        continue_button = QPushButton("Continue without Recording")
-        continue_button.setObjectName("SecondaryButton")
-        continue_button.clicked.connect(lambda: self.log_message.emit("Continuing without camera recording.", "INFO"))
-        controls_layout.addWidget(continue_button)
-
-        controls_layout.addStretch()
-        layout.addLayout(controls_layout, 1)
-
         return content_widget
 
     def create_step3_content(self):

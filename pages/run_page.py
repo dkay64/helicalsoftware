@@ -106,7 +106,53 @@ QPushButton#TransparentButton:hover {
     color: #e4e4e7; /* zinc-200 */
 }
 
-QLabel#CameraPlaceholder { background-color: black; border-radius: 8px; }
+/* === Camera Step Styles === */
+QPushButton#CameraRecordButton {
+    background-color: #2563eb;
+    color: white;
+    padding: 12px;
+    border-radius: 6px;
+    border: none;
+    font-weight: bold;
+    font-size: 14pt;
+}
+QPushButton#CameraRecordButton:hover {
+    background-color: #1d4ed8;
+}
+QPushButton#CameraRecordButton:pressed {
+    background-color: #1e40af;
+}
+
+/* Style for when recording is active */
+QPushButton#CameraRecordButton[recording="true"] {
+    background-color: #ef4444; /* Red for recording */
+}
+QPushButton#CameraRecordButton[recording="true"]:hover {
+    background-color: #dc2626;
+}
+
+QPushButton#CameraSkipButton {
+    background-color: transparent;
+    color: #a1a1aa;
+    border: 1px solid #52525b;
+    padding: 12px;
+    border-radius: 6px;
+}
+QPushButton#CameraSkipButton:hover {
+    background-color: #27272a;
+    color: white;
+}
+QPushButton#CameraSkipButton:pressed {
+    background-color: #27272a;
+}
+
+QLabel#CameraPlaceholder { 
+    background-color: black; 
+    border: 1px solid #3f3f46;
+    border-radius: 8px; 
+}
+/* === End Camera Step Styles === */
+
 QTextEdit#SummaryText { 
     font-size: 11pt; 
     color: #a1a1aa;
@@ -151,6 +197,7 @@ class RunPage(QWidget):
         self.main_window = main_window
         
         self.is_rotation_active = False
+        self.is_recording = False
         
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
@@ -158,9 +205,11 @@ class RunPage(QWidget):
         main_layout.setAlignment(Qt.AlignTop)
 
         self.rotation_card = self._create_rotation_card()
+        self.camera_card = self._create_camera_card()
         self.summary_card = self._create_summary_card()
         
         main_layout.addWidget(self.rotation_card)
+        main_layout.addWidget(self.camera_card)
         main_layout.addWidget(self.summary_card)
         main_layout.addStretch()
 
@@ -176,13 +225,25 @@ class RunPage(QWidget):
     def _reset_to_initial_state(self):
         """Resets the entire page to its default state."""
         self.is_rotation_active = False
+        self.is_recording = False
 
+        # Reset rotation button
         self.start_rotation_btn.setText("START ROTATION")
         self.start_rotation_btn.setObjectName("PrimaryButton")
         self.start_rotation_btn.setEnabled(True)
         self.stop_rotation_btn.setVisible(False)
-        self.start_rotation_btn.style().polish(self.start_rotation_btn) # Re-apply style
+        self.start_rotation_btn.style().polish(self.start_rotation_btn)
 
+        # Reset recording button
+        self.start_recording_btn.setText("START RECORDING")
+        self.start_recording_btn.setProperty("recording", False)
+        self.start_recording_btn.style().unpolish(self.start_recording_btn)
+        self.start_recording_btn.style().polish(self.start_recording_btn)
+
+        # Reset summary
+        self.camera_status_label.setText("Camera: <span style='color:#71717a;'>Disabled</span>")
+
+        self._set_step_enabled(self.camera_card, False)
         self._set_step_enabled(self.summary_card, False)
 
     def _create_card_frame(self):
@@ -223,6 +284,41 @@ class RunPage(QWidget):
         layout.addLayout(button_layout)
         return card
 
+    def _create_camera_card(self):
+        """Creates the camera recording step card."""
+        card = self._create_card_frame()
+        layout = QVBoxLayout(card)
+        layout.setSpacing(15)
+        header = self._create_header_label("2. CAMERA RECORDING")
+        layout.addWidget(header)
+
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(20)
+
+        camera_placeholder = QLabel("Camera Feed")
+        camera_placeholder.setObjectName("CameraPlaceholder")
+        camera_placeholder.setAlignment(Qt.AlignCenter)
+        camera_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content_layout.addWidget(camera_placeholder, 2)
+
+        controls_layout = QVBoxLayout()
+        self.start_recording_btn = QPushButton("START RECORDING")
+        self.start_recording_btn.setObjectName("CameraRecordButton")
+        self.start_recording_btn.setCheckable(True)
+        self.start_recording_btn.clicked.connect(self._toggle_recording)
+        controls_layout.addWidget(self.start_recording_btn)
+
+        continue_button = QPushButton("Continue without Recording")
+        continue_button.setObjectName("CameraSkipButton")
+        continue_button.clicked.connect(self._on_skip_recording)
+        controls_layout.addWidget(continue_button)
+        
+        controls_layout.addStretch()
+        content_layout.addLayout(controls_layout, 1)
+        layout.addLayout(content_layout)
+
+        return card
+
 
 
     def _create_summary_card(self):
@@ -247,6 +343,9 @@ class RunPage(QWidget):
         self.feed_rate_label = QLabel("Feed Rate: <span style='color:white;'>N/A</span>")
         self.feed_rate_label.setObjectName("SummaryLabel")
         
+        self.camera_status_label = QLabel("Camera: <span style='color:#71717a;'>Disabled</span>")
+        self.camera_status_label.setObjectName("SummaryLabel")
+        
         time_label = QLabel("Est. Time: <span style='color:white;'>01:00:00</span>")
         time_label.setObjectName("SummaryLabel")
         
@@ -254,6 +353,7 @@ class RunPage(QWidget):
         data_layout.addWidget(self.rpm_label)
         data_layout.addWidget(self.power_label)
         data_layout.addWidget(self.feed_rate_label)
+        data_layout.addWidget(self.camera_status_label)
         data_layout.addWidget(time_label)
         
         layout.addLayout(data_layout)
@@ -306,14 +406,46 @@ class RunPage(QWidget):
         self.start_rotation_btn.setEnabled(False)
         self.start_rotation_btn.style().polish(self.start_rotation_btn)
         self.stop_rotation_btn.setVisible(True)
-        self._set_step_enabled(self.summary_card, True)
+        self._set_step_enabled(self.camera_card, True)
 
     def _on_stop_rotation(self):
         # M5 is spindle stop, a good command for this action
         self.main_window.send_command("G33 A0")
         self._reset_to_initial_state()
 
+    def _toggle_recording(self):
+        """Toggles the camera recording state."""
+        if not self.is_recording:
+            self.is_recording = True
+            self.start_recording_btn.setText("STOP RECORDING")
+            self.log_message.emit("Recording Started.", "INFO")
+            self.camera_status_label.setText("Camera: <span style='color:#22c55e;'>Active</span>")
+            # Enable the next step only on the first click
+            if not self.summary_card.isEnabled():
+                self._set_step_enabled(self.summary_card, True)
+        else:
+            self.is_recording = False
+            self.start_recording_btn.setText("START RECORDING")
+            self.log_message.emit("Recording Stopped.", "INFO")
+            self.camera_status_label.setText("Camera: <span style='color:#71717a;'>Disabled</span>")
 
+        # Set a dynamic property to change style based on state
+        self.start_recording_btn.setProperty("recording", self.is_recording)
+        # Re-polish the widget to apply the new style
+        self.start_recording_btn.style().unpolish(self.start_recording_btn)
+        self.start_recording_btn.style().polish(self.start_recording_btn)
+
+    def _on_skip_recording(self):
+        """Skips camera recording and proceeds to the next step."""
+        self.log_message.emit("Skipping camera recording.", "WARNING")
+        
+        # Safety interlock: if recording, stop it first.
+        if self.is_recording:
+            self._toggle_recording() # This will also update the label
+
+        self.camera_status_label.setText("Camera: <span style='color:#71717a;'>Disabled</span>")
+        self._set_step_enabled(self.summary_card, True)
+        self.log_message.emit("Proceeding to summary.", "INFO")
 
     def _on_start_run_clicked(self):
         """
