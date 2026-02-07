@@ -414,6 +414,7 @@ class PipelineWorker(QObject):
         self.out_dir = out_dir
         self.cfg = cfg
         self.demo_mode = demo_mode
+        self.job_plan_path = ""
 
     def _emit_log(self, msg):
         """Helper to emit plain pipeline log messages with timestamps."""
@@ -451,6 +452,8 @@ class PipelineWorker(QObject):
                     job_script_path = pipeline.write_helical_job_script(self.out_dir, self.cfg, assets)
                 except Exception as exc:
                     self._emit_log(f"[WARN] Failed to write job plan: {exc}")
+                else:
+                    self.job_plan_path = job_script_path
 
             self._emit_log(f"Saved {spath}")
             self._emit_log(f"Saved {rpath}")
@@ -531,6 +534,7 @@ class HeliCALQt(QMainWindow):
         self._worker = None
         self._ssh_thread = None
         self._ssh_worker = None
+        self.last_job_plan_path = ""
 
         QTimer.singleShot(750, self._initiate_connection)
 
@@ -1004,6 +1008,8 @@ class HeliCALQt(QMainWindow):
 
     def _on_pipeline_done(self, out_dir: str):
         """Celebrate a completed pipeline run with a message box."""
+        if getattr(self, "_worker", None):
+            self.last_job_plan_path = getattr(self._worker, "job_plan_path", "") or ""
         QMessageBox.information(self, "Done", f"Outputs saved to:\n{out_dir}")
 
     def _on_pipeline_failed(self, err: str):
@@ -1164,8 +1170,11 @@ class HeliCALQt(QMainWindow):
         btn_start_seq.clicked.connect(self._send_start_sequence)
         btn_end_seq = QPushButton("Run End Sequence")
         btn_end_seq.clicked.connect(self._send_end_sequence)
+        btn_run_job = QPushButton("Run Job Plan")
+        btn_run_job.clicked.connect(self._send_job_plan)
         seq_layout.addWidget(btn_start_seq)
         seq_layout.addWidget(btn_end_seq)
+        seq_layout.addWidget(btn_run_job)
         seq_group.setLayout(seq_layout)
         layout.addWidget(seq_group)
 
@@ -1389,6 +1398,50 @@ class HeliCALQt(QMainWindow):
         commands = ["G33 A0", "G28", "M18 R T"]
         for cmd in commands:
             self._send_gcode_command(cmd)
+
+    def _send_job_plan(self):
+        """Stream the generated job-plan G-code file to the Jetson."""
+        plan_path = self.last_job_plan_path
+        if not plan_path or not os.path.exists(plan_path):
+            QMessageBox.warning(
+                self,
+                "Job Plan",
+                "No job plan found. Run the pipeline to generate helical_job_plan.gcode first.",
+            )
+            return
+        if not self._ensure_remote_ready():
+            return
+        try:
+            with open(plan_path, "r", encoding="utf-8") as fh:
+                raw_lines = fh.readlines()
+        except Exception as exc:
+            QMessageBox.critical(self, "Job Plan", f"Failed to read {plan_path}:\n{exc}")
+            return
+
+        commands = []
+        for line in raw_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith(";") or stripped.startswith("#"):
+                continue
+            commands.append(stripped)
+        if not commands:
+            QMessageBox.warning(self, "Job Plan", "The job plan file does not contain any executable commands.")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Execute Job Plan",
+            f"Stream {len(commands)} commands from:\n{plan_path}?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        self._append_gcode_log(f"[JOB] Streaming plan: {plan_path}")
+        for cmd in commands:
+            self._send_gcode_command(cmd)
+            QApplication.processEvents()
 
     def _build_axis_command_for_sequence(self):
         """Translate the G0 axis inputs into a single line for the start-sequence macro."""
