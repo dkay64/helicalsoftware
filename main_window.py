@@ -446,7 +446,7 @@ class MainWindow(QMainWindow):
         # Tuples of (Text, icon_name)
         button_defs = [
             ("HOME", "home"), ("UPLOAD", "upload"), ("SETUP", "machine_setup"),
-            ("RUN", "play"), ("DISPLAY", "display")
+            ("RUN PRINT", "play"), ("DISPLAY", "display")
         ]
         
         self.nav_buttons = []
