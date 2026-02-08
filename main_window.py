@@ -13,6 +13,7 @@ from pages.upload_page import UploadPage
 from pages.setup_page import SetupPage
 from pages.run_page import RunPage
 from pages.display_page import DisplayPage
+from pages.advanced_page import AdvancedPage
 from components.jog_dialog import JogDialog
 
 def load_stylesheet(app):
@@ -232,6 +233,7 @@ class MainWindow(QMainWindow):
         self.setup_page = SetupPage(main_window=self)
         self.run_page = RunPage(main_window=self)
         self.display_page = DisplayPage(main_window=self)
+        self.advanced_page = AdvancedPage(main_window=self)
         
         # --- Page Connections ---
         self.upload_page.fileConfirmed.connect(self.go_to_machine_setup)
@@ -244,12 +246,14 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.setup_page)
         self.stacked_widget.addWidget(self.run_page)
         self.stacked_widget.addWidget(self.display_page)
+        self.stacked_widget.addWidget(self.advanced_page)
 
         # Connect log signals
         self.upload_page.log_message.connect(self.append_log)
         self.setup_page.log_message.connect(self.append_log)
         self.run_page.log_message.connect(self.append_log)
         self.display_page.log_message.connect(self.append_log)
+        self.advanced_page.log_message.connect(self.append_log)
         
         log_panel = self.create_log_panel()
 
@@ -270,8 +274,12 @@ class MainWindow(QMainWindow):
         # --- Backend Integration ---
         self.ssh_worker = SSHWorker()
         self.ssh_worker.log_message.connect(self.append_log)
+        self.ssh_worker.log_message.connect(self.advanced_page.append_to_terminal) # Connect to advanced page terminal
         self.ssh_worker.connection_status.connect(self.handle_connection_status)
         self.ssh_worker.file_uploaded.connect(self._on_file_uploaded)
+
+        # Handle page changes to toggle log visibility
+        self.stacked_widget.currentChanged.connect(self.handle_page_change)
 
         # Initialize Jog Dialog - it can now send commands through the main window
         self.jog_dialog = JogDialog(command_callback=self.send_command, parent=self)
@@ -291,6 +299,13 @@ class MainWindow(QMainWindow):
 
         # Attempt to auto-connect on startup
         self.attempt_auto_connect()
+
+    def handle_page_change(self, index):
+        """Hides the bottom log panel when on the Advanced Page."""
+        if self.stacked_widget.widget(index) == self.advanced_page:
+            self.log_panel_widget.hide()
+        else:
+            self.log_panel_widget.show()
 
     def _on_file_uploaded(self, remote_path):
         """SLOT: Stores the remote path of the uploaded file for later use."""
@@ -584,14 +599,17 @@ class MainWindow(QMainWindow):
             sidebar_layout.addWidget(btn)
             if text == "JOG":
                 self.sidebar.jogBtn = btn
+            if text == "ADVANCED":
+                self.btn_advanced = btn
+                btn.clicked.connect(self.go_to_advanced_page)
         
         return sidebar_widget
 
     def create_log_panel(self):
-        log_widget = QFrame()
-        log_widget.setObjectName("Log_Panel")
-        log_widget.setMinimumHeight(50) # Allow it to be shrunk
-        log_layout = QVBoxLayout(log_widget)
+        self.log_panel_widget = QFrame()
+        self.log_panel_widget.setObjectName("Log_Panel")
+        self.log_panel_widget.setMinimumHeight(50) # Allow it to be shrunk
+        log_layout = QVBoxLayout(self.log_panel_widget)
         log_layout.setContentsMargins(0, 0, 0, 0)
         log_layout.setSpacing(0)
         
@@ -607,7 +625,7 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(title)
         log_layout.addWidget(log_display, 1)
         
-        return log_widget
+        return self.log_panel_widget
 
     def handle_nav_click(self, clicked_btn, page_index):
         for btn in self.nav_buttons:
@@ -652,6 +670,18 @@ class MainWindow(QMainWindow):
 
         # 4. Start the G-code driven timer and sensor monitoring
         self.display_page.start_print_sequence()
+
+
+    def go_to_advanced_page(self):
+        """Switches to the Advanced Controls page."""
+        # Uncheck all main navigation buttons since this is a special page
+        for btn in self.nav_buttons:
+            btn.setChecked(False)
+        
+        # Find the index of the advanced page and switch to it
+        index = self.stacked_widget.indexOf(self.advanced_page)
+        if index != -1:
+            self.stacked_widget.setCurrentIndex(index)
 
 
     def closeEvent(self, event):
