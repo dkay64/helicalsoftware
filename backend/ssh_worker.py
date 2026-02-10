@@ -15,20 +15,20 @@ class SSHWorker(QThread):
     upload_progress = pyqtSignal(int)  # 0-100 for file transfers
     file_uploaded = pyqtSignal(str) # (remote_path) - Emitted upon successful upload
 
-    def __init__(self, host="192.168.0.123", user="jetson", password=""):
+    def __init__(self, host="192.168.0.123", user="jacob", password=""):
         super().__init__()
         self.host = host
         self.user = user
         self.password = password
         self.port = 22
-        self.remote_dir = f"/home/{self.user}/helical"
+        self.remote_dir = f"/home/{self.user}/Desktop/HeliCAL_Final"
         self.compile_cmd = (
             "g++ -std=c++17 -Wall -Wextra -pthread master_queue.cpp "
             "Esp32UART.cpp TicController.cpp HeliCalHelper.cpp LED.cpp "
             "DLPC900.cpp window_manager.cpp -I/usr/include/hidapi "
             "-lhidapi-hidraw -o master_queue"
         )
-        self.launch_cmd = f"sudo -S ./{self.remote_dir}/master_queue"
+        self.launch_cmd = f"cd {self.remote_dir} && sudo -S ./master_queue"
         
         self._client = None
         self._sftp = None
