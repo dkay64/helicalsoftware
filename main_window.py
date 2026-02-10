@@ -268,9 +268,6 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(body_widget, 1)
         self.setCentralWidget(central_widget)
         
-        # Connect the global emergency stop button to the trigger
-        self.emergency_stop_button.clicked.connect(self.trigger_emergency_stop)
-
         # --- Backend Integration ---
         self.ssh_worker = SSHWorker()
         self.ssh_worker.log_message.connect(self.append_log)
@@ -526,7 +523,31 @@ class MainWindow(QMainWindow):
 
         self.emergency_stop_button = QPushButton("E-STOP")
         self.emergency_stop_button.setObjectName("Stop_Button")
+        self.emergency_stop_button.setCursor(Qt.PointingHandCursor)
         self.emergency_stop_button.setToolTip("Immediately halts all machine operations (M112).\nThis is not a pause and requires a full reset.")
+        
+        # High-Visibility Safety Style
+        self.emergency_stop_button.setStyleSheet("""
+            QPushButton#Stop_Button {
+                background-color: #dc2626; /* Vivid Red */
+                border: 2px solid #b91c1c; /* Darker Red Border */
+                color: white;
+                border-radius: 6px;
+                padding: 8px 25px; 
+                font-weight: 900; /* Extra Bold */
+                font-size: 15px;
+                letter-spacing: 1px;
+            }
+            QPushButton#Stop_Button:hover {
+                background-color: #ef4444; /* Lighter Red on Hover */
+                border-color: #dc2626;
+            }
+            QPushButton#Stop_Button:pressed {
+                background-color: #b91c1c;
+                border-color: #991b1b;
+            }
+        """)
+        self.emergency_stop_button.clicked.connect(self.trigger_emergency_stop)
         
         header_layout.addWidget(title)
         header_layout.addStretch()
