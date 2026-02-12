@@ -74,9 +74,9 @@ def _job_plan_defaults():
         "start_z": 0.0,
         "a_rpm": 9,
         "warmup_ms": 10000,
-        "exposure_ms": 0,
         "include_video": True,
         "include_metrology_wait": True,
+        "max_layers": 0,
     }
 
 
@@ -449,7 +449,7 @@ class PipelineWorker(QObject):
                     "toy_gcode": gpath,
                 }
                 try:
-                    job_script_path = pipeline.write_helical_job_script(self.out_dir, self.cfg, assets)
+                    job_script_path = pipeline.write_helical_job_script(self.out_dir, self.cfg, assets, recon_array)
                 except Exception as exc:
                     self._emit_log(f"[WARN] Failed to write job plan: {exc}")
                 else:
@@ -808,7 +808,7 @@ class HeliCALQt(QMainWindow):
         self.dsb_job_z = QDoubleSpinBox(); self.dsb_job_z.setDecimals(3); self.dsb_job_z.setRange(-1000.0, 1000.0); self.dsb_job_z.setValue(job_defaults.get("start_z", 0.0)); self.dsb_job_z.setSuffix(" mm")
         self.sb_job_rpm = QSpinBox(); self.sb_job_rpm.setRange(0, 5000); self.sb_job_rpm.setValue(int(job_defaults.get("a_rpm", 9)))
         self.sb_job_warmup = QSpinBox(); self.sb_job_warmup.setRange(0, 600000); self.sb_job_warmup.setSingleStep(500); self.sb_job_warmup.setValue(int(job_defaults.get("warmup_ms", 10000))); self.sb_job_warmup.setSuffix(" ms")
-        self.sb_job_exposure = QSpinBox(); self.sb_job_exposure.setRange(0, 600000); self.sb_job_exposure.setSingleStep(100); self.sb_job_exposure.setValue(int(job_defaults.get("exposure_ms", 0))); self.sb_job_exposure.setSuffix(" ms")
+        self.sb_job_layers = QSpinBox(); self.sb_job_layers.setRange(0, 2048); self.sb_job_layers.setValue(int(job_defaults.get("max_layers", 0)))
         self.cb_job_video = QCheckBox("Trigger projector video (M200/M202/M203/M201)")
         self.cb_job_video.setChecked(bool(job_defaults.get("include_video", True)))
         self.cb_job_metrology = QCheckBox("Include G6 (metrology wait)")
@@ -819,7 +819,7 @@ class HeliCALQt(QMainWindow):
         job_form.addRow("Start Z (mm)", self.dsb_job_z)
         job_form.addRow("A-axis RPM", self.sb_job_rpm)
         job_form.addRow("Warmup dwell (G4)", self.sb_job_warmup)
-        job_form.addRow("Exposure dwell (G4)", self.sb_job_exposure)
+        job_form.addRow("Max layers (0 = all)", self.sb_job_layers)
         job_form.addRow("", self.cb_job_video)
         job_form.addRow("", self.cb_job_metrology)
         job_group.setLayout(job_form)
@@ -970,9 +970,9 @@ class HeliCALQt(QMainWindow):
             "start_z": float(self.dsb_job_z.value()),
             "a_rpm": int(self.sb_job_rpm.value()),
             "warmup_ms": int(self.sb_job_warmup.value()),
-            "exposure_ms": int(self.sb_job_exposure.value()),
             "include_video": bool(self.cb_job_video.isChecked()),
             "include_metrology_wait": bool(self.cb_job_metrology.isChecked()),
+            "max_layers": int(self.sb_job_layers.value()),
         }
         return cfg
 
