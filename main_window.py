@@ -19,8 +19,9 @@ from components.jog_dialog import JogDialog
 def load_stylesheet(app):
     """Loads the global QSS stylesheet for the application."""
     style_sheet = """
-    /* --- Main Window & Canvas --- */
-    #MainWindow, #Canvas {
+    /* --- Main Window & Page Backgrounds --- */
+    #MainWindow, #Canvas,
+    #UploadPage, #SetupPage, #RunPage, #DisplayPage, #AdvancedPage {
         background-color: #09090b;
     }
     QWidget {
@@ -186,7 +187,7 @@ class PlaceholderPage(QWidget):
         self.setObjectName("Canvas")
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
-        label = QLabel(name, self)
+        label = QLabel(name)
         label.setObjectName("Page_Title")
         layout.addWidget(label)
 

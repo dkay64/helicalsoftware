@@ -33,7 +33,6 @@ class AdvancedPage(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0,0,0,0)
         layout.addWidget(self.splitter)
-        self.setLayout(layout)
 
         self._apply_styles()
 
