@@ -126,11 +126,11 @@ class SetupPage(QWidget):
         main_layout.setSpacing(20)
 
         # Step 1: Homing
-        step1_card = self.create_step_card("STEP 1: HOMING & AXES SETUP", self.create_step1_content())
+        step1_card = self.create_step_card("1. HOMING & AXES SETUP", self.create_step1_content())
         main_layout.addWidget(step1_card)
 
         # Step 2: Parameters
-        step3_card = self.create_step_card("STEP 2: SET PARAMETERS", self.create_step3_content())
+        step3_card = self.create_step_card("2. SET PARAMETERS", self.create_step3_content())
         main_layout.addWidget(step3_card)
 
         main_layout.addStretch(1)
@@ -143,7 +143,6 @@ class SetupPage(QWidget):
         footer_layout.addWidget(self.next_step_button)
         main_layout.addLayout(footer_layout)
         
-        self.setLayout(main_layout)
         self.apply_styles()
 
     def create_step_card(self, title, content_widget):

@@ -1,5 +1,4 @@
 import sys
-import random
 import os
 from PyQt5.QtWidgets import (
     QApplication,
@@ -101,13 +100,13 @@ class SensorWorker(QThread):
     def run(self):
         while self._is_running:
             data = {
-                'cw_r': random.uniform(0.0, 100.0), 'cw_t': random.uniform(-180.0, 180.0), 'cw_z': random.uniform(0.0, 50.0),
-                'tw_r': random.uniform(0.0, 100.0), 'tw_t': random.uniform(-180.0, 180.0), 'tw_z': random.uniform(0.0, 50.0),
-                'rpm': random.uniform(500.0, 600.0),
-                'imu_ax': random.uniform(-1.0, 1.0), 'imu_ay': random.uniform(-1.0, 1.0), 'imu_az': random.uniform(9.5, 10.1),
+                'cw_r': 0.0, 'cw_t': 0.0, 'cw_z': 0.0,
+                'tw_r': 0.0, 'tw_t': 0.0, 'tw_z': 0.0,
+                'rpm': 0.0,
+                'imu_ax': 0.0, 'imu_ay': 0.0, 'imu_az': 0.0,
             }
             self.data_updated.emit(data)
-            self.msleep(100)
+            self.msleep(500)
 
     def stop(self):
         if self.isRunning():

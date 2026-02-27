@@ -56,7 +56,7 @@ class DragDropZone(QFrame):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(20)
 
-        self.icon_label = QLabel(self)
+        self.icon_label = QLabel()
         
         # CRITICAL: Use QIcon to render SVG at high resolution for sharpness
         icon = QIcon("assets/icons/upload.svg")
@@ -70,14 +70,14 @@ class DragDropZone(QFrame):
         self.icon_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.icon_label)
 
-        self.main_text = QLabel("Drag & Drop Video File", self)
+        self.main_text = QLabel("Drag & Drop Video File")
         self.main_text.setAlignment(Qt.AlignCenter)
         self.main_text.setStyleSheet(
             "font-size: 24px; font-weight: bold; color: #ccc; background: transparent;"
         )
         layout.addWidget(self.main_text)
 
-        self.sub_text = QLabel("or click to browse local files", self)
+        self.sub_text = QLabel("or click to browse local files")
         self.sub_text.setAlignment(Qt.AlignCenter)
         self.sub_text.setStyleSheet("font-size: 16px; color: #888; background: transparent;")
         layout.addWidget(self.sub_text)
