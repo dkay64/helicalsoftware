@@ -51,6 +51,17 @@ static constexpr int32_t HOME_OFF_T = -335288;
 static constexpr uint8_t HOME_DIR_Z = 0;       // up/down
 static constexpr int32_t HOME_OFF_Z = 24025;
 
+// ===================== SOFT LIMITS =====================
+// Soft bounds (position units = Tic position counts)
+static constexpr int32_t Z_MIN_POS = 0;
+static constexpr int32_t Z_MAX_POS = 90000;
+
+static constexpr int32_t T_MIN_POS = -645288;
+static constexpr int32_t T_MAX_POS = 0;
+
+static constexpr int32_t R_MIN_POS = -283000;
+static constexpr int32_t R_MAX_POS = 0;
+
 // ====== Axis config you provided ======
 static const uint32_t STEPPER_Z_STEPMODE        = 7;
 static const uint32_t STEPPER_Z_MAXACCELERATION = 2560000;
@@ -137,6 +148,15 @@ static inline uint32_t axis_max_speed(char axis) {
         case 'T': return STEPPER_RT_MAXVELOCITY;
         case 'Z': return STEPPER_Z_MAXVELOCITY;
         default:  return 0;
+    }
+}
+
+static inline bool axis_soft_limits(char axis, int32_t& out_min, int32_t& out_max) {
+    switch (toupper(axis)) {
+        case 'R': out_min = R_MIN_POS; out_max = R_MAX_POS; return true;
+        case 'T': out_min = T_MIN_POS; out_max = T_MAX_POS; return true;
+        case 'Z': out_min = Z_MIN_POS; out_max = Z_MAX_POS; return true;
+        default: return false;
     }
 }
 
@@ -279,6 +299,16 @@ int main() {
     };
 
     auto move_axis = [&](char axis, const AxisGroup& grp, int32_t target) {
+        int32_t min_pos = 0;
+        int32_t max_pos = 0;
+        if (axis_soft_limits(axis, min_pos, max_pos)) {
+            if (target < min_pos || target > max_pos) {
+                cout << "[RANGE] Axis " << axis << " target " << target
+                     << " outside [" << min_pos << ", " << max_pos << "] ? skipping.\n";
+                return;
+            }
+        }
+
         ensure_ready(grp);
 
         if (!try_apply_axis_speed(axis, grp)) {
@@ -726,33 +756,57 @@ int main() {
                         if (hasR) {
                             int32_t target = absolute_mode ? static_cast<int32_t>(Rv)
                                                         : get_axis_pos('R') + static_cast<int32_t>(Rv);
-                            ensure_ready(AX_R);
-                            AX_R.setMaxSpeed(axis_max_speed('R'));   // force rapid cap
-                            AX_R.setTargetPosition(target);          // go!
-                            cout << "[G0] R rapid -> " << target
-                                << " @ " << axis_max_speed('R') << "\n";
+                            int32_t min_pos = 0;
+                            int32_t max_pos = 0;
+                            if (axis_soft_limits('R', min_pos, max_pos) &&
+                                (target < min_pos || target > max_pos)) {
+                                cout << "[RANGE] G0 R target " << target
+                                     << " outside [" << min_pos << ", " << max_pos << "] ? skipping.\n";
+                            } else {
+                                ensure_ready(AX_R);
+                                AX_R.setMaxSpeed(axis_max_speed('R'));   // force rapid cap
+                                AX_R.setTargetPosition(target);          // go!
+                                cout << "[G0] R rapid -> " << target
+                                    << " @ " << axis_max_speed('R') << "\n";
+                            }
                         }
 
                         // T
                         if (hasT) {
                             int32_t target = absolute_mode ? static_cast<int32_t>(Tv)
                                                         : get_axis_pos('T') + static_cast<int32_t>(Tv);
-                            ensure_ready(AX_T);
-                            AX_T.setMaxSpeed(axis_max_speed('T'));   // force rapid cap
-                            AX_T.setTargetPosition(target);
-                            cout << "[G0] T rapid -> " << target
-                                << " @ " << axis_max_speed('T') << "\n";
+                            int32_t min_pos = 0;
+                            int32_t max_pos = 0;
+                            if (axis_soft_limits('T', min_pos, max_pos) &&
+                                (target < min_pos || target > max_pos)) {
+                                cout << "[RANGE] G0 T target " << target
+                                     << " outside [" << min_pos << ", " << max_pos << "] ? skipping.\n";
+                            } else {
+                                ensure_ready(AX_T);
+                                AX_T.setMaxSpeed(axis_max_speed('T'));   // force rapid cap
+                                AX_T.setTargetPosition(target);
+                                cout << "[G0] T rapid -> " << target
+                                    << " @ " << axis_max_speed('T') << "\n";
+                            }
                         }
 
                         // Z
                         if (hasZ) {
                             int32_t target = absolute_mode ? static_cast<int32_t>(Zv)
                                                         : get_axis_pos('Z') + static_cast<int32_t>(Zv);
-                            ensure_ready(AX_Z);
-                            AX_Z.setMaxSpeed(axis_max_speed('Z'));   // force rapid cap
-                            AX_Z.setTargetPosition(target);
-                            cout << "[G0] Z rapid -> " << target
-                                << " @ " << axis_max_speed('Z') << "\n";
+                            int32_t min_pos = 0;
+                            int32_t max_pos = 0;
+                            if (axis_soft_limits('Z', min_pos, max_pos) &&
+                                (target < min_pos || target > max_pos)) {
+                                cout << "[RANGE] G0 Z target " << target
+                                     << " outside [" << min_pos << ", " << max_pos << "] ? skipping.\n";
+                            } else {
+                                ensure_ready(AX_Z);
+                                AX_Z.setMaxSpeed(axis_max_speed('Z'));   // force rapid cap
+                                AX_Z.setTargetPosition(target);
+                                cout << "[G0] Z rapid -> " << target
+                                    << " @ " << axis_max_speed('Z') << "\n";
+                            }
                         }
                         break;
                     }
@@ -999,3 +1053,4 @@ int main() {
     restore_terminal();
     return 0;
 }
+
