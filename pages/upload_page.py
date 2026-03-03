@@ -1,293 +1,186 @@
+import sys
 import os
-# This environment variable must be set before importing PyQt5
-os.environ['QT_MULTIMEDIA_PREFERRED_PLUGINS'] = 'windowsmediafoundation'
-
 from PyQt5.QtWidgets import (
+    QApplication,
     QWidget,
     QVBoxLayout,
-    QFrame,
+    QHBoxLayout,
+    QPushButton,
+    QLineEdit,
     QLabel,
+    QGroupBox,
     QSizePolicy,
     QFileDialog,
-    QStackedWidget,
-    QPushButton,
-    QHBoxLayout,
-    QToolButton,
     QMessageBox,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QUrl, QSize
-from PyQt5.QtGui import QPixmap, QIcon
-from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
-from PyQt5.QtMultimediaWidgets import QVideoWidget
-
-
-class DragDropZone(QFrame):
-    """
-    A custom QFrame that accepts drag-and-drop for video files
-    and can be clicked to open a file dialog.
-    """
-    fileDropped = pyqtSignal(str)
-    fileInvalid = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.setObjectName("DragDropZone")
-        self.setStyleSheet(
-            """
-            #DragDropZone {
-                border: 3px dashed #3f3f46;
-                border-radius: 20px;
-                background-color: #18181b;
-            }
-            #DragDropZone:hover {
-                border-color: #3b82f6;
-                background-color: #1e1e24;
-            }
-            """
-        )
-        self.setCursor(Qt.PointingHandCursor)
-
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setMinimumSize(400, 300)
-
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignCenter)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(20)
-
-        self.icon_label = QLabel()
-        
-        # CRITICAL: Use QIcon to render SVG at high resolution for sharpness
-        icon = QIcon("assets/icons/upload.svg")
-        pixmap = icon.pixmap(QSize(256, 256)) # Render high-res pixmap
-        
-        self.icon_label.setPixmap(
-            pixmap.scaled(
-                128, 128, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-        )
-        self.icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.icon_label)
-
-        self.main_text = QLabel("Drag & Drop Video File")
-        self.main_text.setAlignment(Qt.AlignCenter)
-        self.main_text.setStyleSheet(
-            "font-size: 24px; font-weight: bold; color: #ccc; background: transparent;"
-        )
-        layout.addWidget(self.main_text)
-
-        self.sub_text = QLabel("or click to browse local files")
-        self.sub_text.setAlignment(Qt.AlignCenter)
-        self.sub_text.setStyleSheet("font-size: 16px; color: #888; background: transparent;")
-        layout.addWidget(self.sub_text)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                if url.isLocalFile() and url.toLocalFile().lower().endswith(".mp4"):
-                    event.acceptProposedAction()
-                    self.setProperty("hover", True)
-                    self.style().unpolish(self)
-                    self.style().polish(self)
-                    return
-        event.ignore()
-
-    def dragLeaveEvent(self, event):
-        self.setProperty("hover", False)
-        self.style().unpolish(self)
-        self.style().polish(self)
-
-    def dropEvent(self, event):
-        self.setProperty("hover", False)
-        self.style().unpolish(self)
-        self.style().polish(self)
-        for url in event.mimeData().urls():
-            if url.isLocalFile():
-                file_path = url.toLocalFile()
-                if file_path.lower().endswith(".mp4"):
-                    self.fileDropped.emit(file_path)
-                    event.accept()
-                    return
-                else:
-                    self.fileInvalid.emit("Invalid file type. Only .mp4 videos are accepted.")
-                    event.ignore()
-                    return
-        event.ignore()
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            file_path, _ = QFileDialog.getOpenFileName(
-                self, "Select a Video File", "", "Video Files (*.mp4)"
-            )
-            if file_path:
-                self.fileDropped.emit(file_path)
-
+from PyQt5.QtCore import Qt, pyqtSignal
 
 class UploadPage(QWidget):
-    """
-    Manages the two states of the upload process: Drop Zone and Preview.
-    """
-    fileConfirmed = pyqtSignal(str)
     log_message = pyqtSignal(str, str)
+    fileConfirmed = pyqtSignal()
 
-    def __init__(self, main_window, parent=None):
+    def __init__(self, main_window=None, parent=None):
         super().__init__(parent)
-        self.setObjectName("UploadPage")
         self.main_window = main_window
+        self.video_path = None
+        self.gcode_path = None
+        self.setObjectName("UploadPage")
+        self._setup_ui()
+        self._apply_styles()
+
+    def _setup_ui(self):
+        """Initializes the widgets and layouts."""
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(20)
+        main_layout.setAlignment(Qt.AlignCenter)
+
+        header_label = QLabel("Job File Selection")
+        header_label.setObjectName("PageTitle")
+        header_label.setAlignment(Qt.AlignCenter)
+
+        # Step 1: Video Upload
+        step1_group = QGroupBox("Step 1: Select Projector Video (.mp4)")
+        step1_group.setMaximumWidth(900)
+        step1_layout = QVBoxLayout(step1_group)
+        step1_layout.setSpacing(15)
+
+        video_input_layout = QHBoxLayout()
+        self.video_path_line_edit = QLineEdit()
+        self.video_path_line_edit.setPlaceholderText("No video file selected...")
+        self.video_path_line_edit.setReadOnly(True)
+        self.video_path_line_edit.setMinimumWidth(350)
+        self.browse_video_button = QPushButton("Browse Video")
+        video_input_layout.addWidget(self.video_path_line_edit)
+        video_input_layout.addWidget(self.browse_video_button)
+        step1_layout.addLayout(video_input_layout)
+
+        # Step 2: G-Code Upload
+        step2_group = QGroupBox("Step 2: Select G-Code File (.gcode, .txt)")
+        step2_group.setMaximumWidth(900)
+        step2_layout = QVBoxLayout(step2_group)
+        step2_layout.setSpacing(15)
+
+        gcode_input_layout = QHBoxLayout()
+        self.gcode_path_line_edit = QLineEdit()
+        self.gcode_path_line_edit.setPlaceholderText("No G-Code file selected...")
+        self.gcode_path_line_edit.setReadOnly(True)
+        self.gcode_path_line_edit.setMinimumWidth(350)
+        self.browse_gcode_button = QPushButton("Browse G-Code")
+        gcode_input_layout.addWidget(self.gcode_path_line_edit)
+        gcode_input_layout.addWidget(self.browse_gcode_button)
+        step2_layout.addLayout(gcode_input_layout)
         
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.setAlignment(Qt.AlignCenter)
-        self.stack = QStackedWidget(self)
-        self.main_layout.addWidget(self.stack)
-
-        self.file_path = None
-
-        # State A: Drop Zone
-        self.drop_zone_widget = QWidget()
-        drop_zone_layout = QHBoxLayout(self.drop_zone_widget)
-        drop_zone_layout.setAlignment(Qt.AlignCenter)
-        self.drop_zone = DragDropZone()
-        self.drop_zone.fileDropped.connect(self.on_file_loaded)
-        self.drop_zone.fileInvalid.connect(self.on_file_invalid)
-        drop_zone_layout.addWidget(self.drop_zone)
-        self.stack.addWidget(self.drop_zone_widget)
-
-        # State B: Video Preview
-        self.video_preview_widget = self._create_preview_widget()
-        self.stack.addWidget(self.video_preview_widget)
-
-    def on_file_invalid(self, error_message):
-        self.log_message.emit(error_message, "ERROR")
-
-    def _create_preview_widget(self):
-        """Creates the State B widget for video preview and confirmation."""
-        preview_widget = QWidget()
-        preview_layout = QVBoxLayout(preview_widget)
-        preview_layout.setContentsMargins(10, 10, 10, 10)
-        preview_layout.setSpacing(15)
-
-        # --- Top: Filename Label ---
-        self.filename_label = QLabel("Loaded: ...")
-        self.filename_label.setAlignment(Qt.AlignCenter)
-        self.filename_label.setStyleSheet("color: #888; font-size: 14px;")
-        preview_layout.addWidget(self.filename_label)
-
-        # --- Video Area ---
-        self.video_widget = QVideoWidget()
-        self.player = QMediaPlayer()
-        self.player.setVideoOutput(self.video_widget)
-        self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        preview_layout.addWidget(self.video_widget, 1)
-
-        # --- Playback Controls ---
-        controls_layout = QHBoxLayout()
-        controls_layout.setAlignment(Qt.AlignCenter)
-        self.play_pause_button = QToolButton()
-        self.play_pause_button.setIconSize(QSize(48, 48))
-        self.play_pause_button.setStyleSheet("QToolButton { border: none; }")
-        self.play_pause_button.clicked.connect(self.toggle_playback)
-        controls_layout.addWidget(self.play_pause_button)
-        preview_layout.addLayout(controls_layout)
-
-        # --- Footer Bar ---
-        footer_bar_layout = QHBoxLayout()
+        # Confirmation Button
+        self.btn_confirm = QPushButton("Confirm Files and Proceed to Setup")
+        self.btn_confirm.setObjectName("PrimaryBtn")
+        self.btn_confirm.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         
-        # 'Change File' button (Left)
-        change_file_button = QPushButton("Change File")
-        change_file_button.clicked.connect(self.reset)
-        change_file_button.setStyleSheet("""
-            QPushButton {
-                border: 1px solid #3f3f46;
+        # Assemble the main layout
+        main_layout.addWidget(header_label)
+        main_layout.addWidget(step1_group)
+        main_layout.addWidget(step2_group)
+        main_layout.addWidget(self.btn_confirm, 0, Qt.AlignCenter)
+        main_layout.addStretch() 
+
+        # The container is no longer needed as we align the whole layout
+        self.setLayout(main_layout)
+
+        # --- Connect Signals ---
+        self.browse_video_button.clicked.connect(self._browse_video_file)
+        self.browse_gcode_button.clicked.connect(self._browse_gcode_file)
+        self.btn_confirm.clicked.connect(self._confirm_files)
+
+    def _browse_video_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose Video File", "", "MP4 Files (*.mp4);;All Files (*)")
+        if path:
+            self.video_path = path
+            self.video_path_line_edit.setText(path)
+            self.log_message.emit(f"Selected video file: {path}", "INFO")
+
+    def _browse_gcode_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose G-Code File", "", "G-Code Files (*.gcode *.txt);;All Files (*)")
+        if path:
+            self.gcode_path = path
+            self.gcode_path_line_edit.setText(path)
+            self.log_message.emit(f"Selected G-Code file: {path}", "INFO")
+
+    def _confirm_files(self):
+        if not self.video_path or not self.gcode_path:
+            QMessageBox.warning(self, "Missing Files", "Please select both a video file and a G-code file.")
+            self.log_message.emit("File confirmation failed: one or both files are missing.", "WARNING")
+            return
+
+        if not os.path.exists(self.video_path) or not os.path.exists(self.gcode_path):
+            QMessageBox.critical(self, "File Not Found", "One of the selected files could not be found.")
+            return
+            
+        if self.main_window:
+            self.log_message.emit("Video and G-code files confirmed.", "SUCCESS")
+            self.main_window.job_data['video_path'] = self.video_path
+            self.main_window.job_data['gcode_path'] = self.gcode_path
+            self.main_window.start_upload(self.video_path)
+            self.fileConfirmed.emit()
+
+    def _apply_styles(self):
+        self.setStyleSheet("""
+            #UploadPage {
+                background-color: #09090b;
+            }
+            #PageTitle {
+                font-size: 24pt;
+                font-weight: bold;
                 color: #e4e4e7;
-                background-color: transparent;
-                border-radius: 8px;
-                padding: 10px 20px;
-                font-weight: bold;
-                font-size: 14px;
+                margin-bottom: 10px;
             }
-            QPushButton:hover {
+            QGroupBox {
+                background-color: #18181b;
+                border: 1px solid #27272a;
+                border-radius: 12px;
+                font-weight: bold;
+                font-size: 16pt; 
+                margin-top: 15px; 
+                padding: 25px 20px 20px 20px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 10px;
+                left: 15px;
+                color: #e4e4e7;
+            }
+            QLineEdit {
                 background-color: #27272a;
-            }
-        """)
-        footer_bar_layout.addWidget(change_file_button)
-
-        footer_bar_layout.addStretch() # Spacer
-
-        # 'Next Step' button (Right)
-        self.next_step_button = QPushButton("NEXT STEP: MACHINE SETUP")
-        self.next_step_button.clicked.connect(self.confirm_file)
-        self.next_step_button.setStyleSheet("""
-            QPushButton {
-                background-color: #3b82f6;
-                color: white;
+                border: 1px solid #3f3f46;
                 border-radius: 8px;
+                color: #e4e4e7;
+                padding: 10px;
+                font-size: 12pt;
+            }
+            QPushButton {
+                background-color: #27272a;
+                border: 1px solid #52525b;
+                border-radius: 8px;
+                color: #e4e4e7;
                 padding: 10px 20px;
+                font-size: 12pt;
                 font-weight: bold;
-                font-size: 14px;
             }
             QPushButton:hover {
+                background-color: #3f3f46;
+            }
+            QPushButton#PrimaryBtn {
+                background-color: #3b82f6;
+                border: none;
+                color: white;
+                font-size: 14pt;
+                font-weight: bold;
+                padding: 12px 24px;
+                border-radius: 8px;
+                margin-top: 20px;
+            }
+            QPushButton#PrimaryBtn:hover {
                 background-color: #2563eb;
             }
         """)
-        footer_bar_layout.addWidget(self.next_step_button)
-        preview_layout.addLayout(footer_bar_layout)
 
-        # Connect signals
-        self.player.stateChanged.connect(self.on_player_state_changed)
-        self.on_player_state_changed(self.player.state())
-
-        return preview_widget
-
-    def on_file_loaded(self, file_path):
-        try:
-            self.file_path = file_path
-            display_name = os.path.basename(file_path)
-            if len(display_name) > 40:
-                display_name = "..." + display_name[-37:]
-            
-            self.filename_label.setText(f"Loaded: {display_name}")
-            self.player.setMedia(QMediaContent(QUrl.fromLocalFile(file_path)))
-            
-            self.stack.setCurrentWidget(self.video_preview_widget)
-            self.log_message.emit(f"File loaded: {display_name}", "INFO")
-            self.player.play()
-
-        except Exception as e:
-            self.log_message.emit(f"Failed to load video: {e}. The file may be corrupt or in an unsupported format.", "ERROR")
-            self.reset()
-
-    def toggle_playback(self):
-        if self.player.state() == QMediaPlayer.PlayingState:
-            self.player.pause()
-        else:
-            self.player.play()
-
-    def on_player_state_changed(self, state):
-        if state == QMediaPlayer.PlayingState:
-            self.play_pause_button.setIcon(QIcon('assets/icons/pause.svg'))
-        else:
-            self.play_pause_button.setIcon(QIcon('assets/icons/play.svg'))
-
-    def confirm_file(self):
-        """
-        Confirms the file selection, stores the path in the main window's job_data,
-        starts the background upload, and emits the signal to proceed to the next page.
-        """
-        if self.file_path:
-            self.log_message.emit("File confirmed, starting background upload.", "INFO")
-            
-            # Store data and start upload via main_window
-            self.main_window.job_data['video_path'] = self.file_path
-            self.main_window.start_upload(self.file_path)
-            
-            # Proceed to the next step in the UI
-            self.fileConfirmed.emit(self.file_path)
-        else:
-            self.log_message.emit("Cannot proceed: No file selected.", "WARNING")
-            QMessageBox.warning(self, "No File Selected", "Please select a video file before proceeding.")
-
-    def reset(self):
-        self.player.stop()
-        self.file_path = None
-        self.stack.setCurrentWidget(self.drop_zone_widget)
