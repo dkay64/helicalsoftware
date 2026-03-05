@@ -21,15 +21,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-
-// Sample commmand - for some reason z comm waits for us to press enter to be executed
-/* G91 
- G0 R10000
- G0 T10000
- G1 T-10000 F50000000
- G0 R20000
- G1 Z-15000 F50000000
-*/
+#include <functional>
+#include <termios.h>   // tcflush
 
 using namespace std;
 
@@ -113,11 +106,11 @@ struct AxisGroup {
         if (d) d->exitSafeStart();
     }
     void haltAndHold() const {
-		if (a) a->haltAndHold();
-		if (b) b->haltAndHold();
-		if (c) c->haltAndHold();
-		if (d) d->haltAndHold();
-	}
+        if (a) a->haltAndHold();
+        if (b) b->haltAndHold();
+        if (c) c->haltAndHold();
+        if (d) d->haltAndHold();
+    }
 };
 
 // Trim + strip comment after ';'
@@ -191,6 +184,28 @@ static TicController* rep_ctrl_for(char axis,
 }
 
 int main() {
+    // ===================== TERMINAL RESTORE FIX =====================
+    // Restore terminal ONLY ONCE, and ONLY at the very end (after threads are joined).
+    static std::once_flag g_term_once;
+    auto restore_terminal_once = [&]() {
+        std::call_once(g_term_once, [](){
+            // Best-effort: your helper restores what it set.
+            restore_terminal();
+            // Extra parachute: force sane terminal settings (very useful over SSH).
+            system("stty sane");
+            // Flush any pending input so it doesn't hit bash weirdly.
+            tcflush(STDIN_FILENO, TCIFLUSH);
+            std::cout << "\n" << std::flush;
+        });
+    };
+
+    // Always restore terminal on any exit path (even exceptions)
+    struct ScopeExit {
+        std::function<void()> fn;
+        ~ScopeExit() { if (fn) fn(); }
+    } scope_exit{ restore_terminal_once };
+    // ================================================================
+
     // ===== 1) Instantiate controllers =====
     TicController tic_tw_z1("/dev/i2c-1", 0x10, STEPPER_Z_STEPMODE,  STEPPER_Z_MAXACCELERATION,  STEPPER_Z_MAXDECELERATION,  STEPPER_Z_MAXVELOCITY,  STEPPER_Z_MAXCURRENTmA, "tic_tw_z1");
     TicController tic_tw_z2("/dev/i2c-1", 0x11, STEPPER_Z_STEPMODE,  STEPPER_Z_MAXACCELERATION,  STEPPER_Z_MAXDECELERATION,  STEPPER_Z_MAXVELOCITY,  STEPPER_Z_MAXCURRENTmA, "tic_tw_z2");
@@ -236,15 +251,6 @@ int main() {
         m->setTargetVelocity(0);
     }
 
-    // 
-    // // ===== 2) Optional: home on startup =====
-    // cout << "Homing R/T/Z ..." << endl;
-    // zeroAxisPair(tic_tw_r, tic_cw_r, HOME_DIR_R, HOME_OFF_R);
-    // zeroAxisPair(tic_tw_t, tic_cw_t, HOME_DIR_T, HOME_OFF_T);
-    // zeroAxisPair(tic_tw_z1, tic_tw_z2, tic_cw_z1, tic_cw_z2, HOME_DIR_Z, HOME_OFF_Z);
-    // cout << "Homing complete." << endl;
-    //     
-
     // Projector / LED basic init
     led.configure();
     led.current(450);
@@ -252,12 +258,11 @@ int main() {
 
     // ===== 3) Interpreter state =====
     bool absolute_mode = true;             // G90 (default)
-    double F_global = 100000.0;            // (kept as-is in your current file)
+    double F_global = 100000.0;
     unordered_map<char, double> F_axis = {
-        {'R', F_global}, {'T', F_global}, {'Z', F_global}, {'A', 9.0} // A uses RPM
+        {'R', F_global}, {'T', F_global}, {'Z', F_global}, {'A', 9.0}
     };
 
-    // --- readiness helper ---
     auto ensure_ready = [&](const AxisGroup& grp) {
         if (grp.a) { grp.a->clearDriverError(); grp.a->exitSafeStart(); grp.a->energize(); grp.a->resetCommandTimeout(); }
         if (grp.b) { grp.b->clearDriverError(); grp.b->exitSafeStart(); grp.b->energize(); grp.b->resetCommandTimeout(); }
@@ -265,8 +270,6 @@ int main() {
         if (grp.d) { grp.d->clearDriverError(); grp.d->exitSafeStart(); grp.d->energize(); grp.d->resetCommandTimeout(); }
     };
 
-
-//rapid cap ceiling
     auto try_apply_axis_speed = [&](char axis, const AxisGroup& grp) -> bool {
         const uint32_t cap = axis_max_speed(axis);
         double req = (F_axis.count(axis) ? F_axis[axis] : F_global);
@@ -278,7 +281,7 @@ int main() {
         }
         if (req == 0.0) {
             cout << "[WARN] Axis " << axis << " feed is 0. skipping move.\n";
-            return false; // Do not proceed with a 0-speed move
+            return false;
         }
         grp.setMaxSpeed(static_cast<uint32_t>(req));
         return true;
@@ -376,10 +379,13 @@ int main() {
     auto motors_enable = [&](){
         for (auto* m : all){ m->energize(); }
     };
+
+    // (bugfix) if axes empty, disable ALL axes
     auto motors_disable = [&](const std::vector<char>& axes = {}){
         if (axes.empty()) {
             disable_axis('R');
             disable_axis('T');
+            disable_axis('Z');
         } else {
             for (char axis : axes) {
                 disable_axis(static_cast<char>(std::toupper(axis)));
@@ -389,9 +395,7 @@ int main() {
     };
 
     auto trigger_estop = [&]() {
-        if (halt_requested) {
-            return;
-        }
+        if (halt_requested) return;
         halt_requested = true;
         cout << "[HALT] Emergency stop requested.\n";
         request_abort();
@@ -401,16 +405,93 @@ int main() {
         motors_disable(std::vector<char>{'R','T','Z'});
     };
 
-    auto perform_shutdown = [&](bool restore_term) {
+    // ===================== IMPORTANT CHANGE =====================
+    // perform_shutdown() no longer touches terminal settings.
+    auto perform_shutdown = [&](bool /*restore_term_ignored*/) {
         dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
         led.stop();
-        if (restore_term) {
-            restore_terminal();
-        }
         shutting_down = true;
         clear_command_queue();
         queue_cv.notify_all();
         exit_requested = true;
+    };
+    // ============================================================
+
+    auto wait_for_axes = [&](int timeout_ms = 30000) -> bool {
+        using namespace std::chrono;
+        auto t0 = steady_clock::now();
+
+        while (true) {
+            if (abort_requested()) return false;
+
+            bool done = true;
+            try {
+                done &= (tic_tw_r.getCurrentPosition()  == tic_tw_r.getTargetPosition());
+                done &= (tic_tw_t.getCurrentPosition()  == tic_tw_t.getTargetPosition());
+                done &= (tic_tw_z1.getCurrentPosition() == tic_tw_z1.getTargetPosition());
+            } catch (const std::exception& e) {
+                std::cerr << "!! I2C error while waiting for axes: " << e.what() << "\n";
+                return false;
+            }
+
+            if (done) return true;
+
+            if (duration_cast<milliseconds>(steady_clock::now() - t0).count() > timeout_ms) {
+                std::cerr << "!! Timeout waiting for axes to finish.\n";
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    };
+
+    auto safe_shutdown_m900 = [&]() {
+        cout << "M900: SAFE SHUTDOWN sequence starting...\n";
+
+        clear_command_queue();
+        queue_cv.notify_all();
+
+        AX_R.haltAndHold();
+        AX_T.haltAndHold();
+        AX_Z.haltAndHold();
+
+        ensure_ready(AX_R);
+        ensure_ready(AX_T);
+        ensure_ready(AX_Z);
+
+        AX_R.setMaxSpeed(axis_max_speed('R'));
+        AX_T.setMaxSpeed(axis_max_speed('T'));
+        AX_Z.setMaxSpeed(axis_max_speed('Z'));
+
+        cout << "M900: Parking R -> " << HOME_OFF_R << ", T -> " << HOME_OFF_T << "\n";
+        AX_R.setTargetPosition(HOME_OFF_R);
+        AX_T.setTargetPosition(HOME_OFF_T);
+
+        const int32_t Z_SAFE = 10000;
+        int32_t z_cmd = std::min(std::max(Z_SAFE, Z_MIN_POS), Z_MAX_POS);
+        cout << "M900: Lowering Z -> " << z_cmd << "\n";
+        AX_Z.setTargetPosition(z_cmd);
+
+        cout << "M900: Waiting for axes to finish...\n";
+        bool ok = wait_for_axes(30000);
+
+        if (!ok) {
+            cout << "M900: Motion did not complete cleanly. Halting and holding for safety.\n";
+            AX_R.haltAndHold();
+            AX_T.haltAndHold();
+            AX_Z.haltAndHold();
+        }
+
+        uart.setThetaVelocity(0);
+
+        for (auto* m : all) {
+            try { m->deenergize(); } catch (...) {}
+        }
+
+        dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
+        led.stop();
+
+        cout << "M900: Safe shutdown complete. Exiting program.\n";
+        perform_shutdown(true);
     };
 
     auto handle_immediate_command = [&](const std::string& cmd)->bool {
@@ -419,37 +500,32 @@ int main() {
         if (!(iss >> head)) return false;
         std::transform(head.begin(), head.end(), head.begin(), ::toupper);
         if (head.empty() || head[0] != 'M') return false;
+
         int mnum = 0;
-        try {
-            mnum = stoi(head.substr(1));
-        } catch (...) {
-            return false;
-        }
+        try { mnum = stoi(head.substr(1)); } catch (...) { return false; }
 
         switch (mnum) {
-            case 30: {
+            case 30:
                 cout << "M30: Program complete. Exiting G-Code Mode.\n";
                 motors_disable();
                 perform_shutdown(true);
                 return true;
-            }
-            case 112: {
+            case 112:
                 cout << "M112: EMERGENCY STOP.\n";
                 trigger_estop();
                 perform_shutdown(false);
                 return true;
-            }
-            case 999: {
+            case 999:
                 cout << "M999: Halt and hold all axes.\n";
                 trigger_estop();
                 clear_command_queue();
                 queue_cv.notify_all();
                 return true;
-            }
+            case 900:
+                safe_shutdown_m900();
+                return true;
             case 200:
-                led.configure();
-                led.current(450);
-                dlp.configure();
+                led.configure(); led.current(450); dlp.configure();
                 cout << "M200: Projector ON (configured).\n";
                 return true;
             case 201:
@@ -473,52 +549,33 @@ int main() {
                 double current_ma = -1.0;
                 string token;
                 while (iss >> token) {
-                    if (token.empty()) continue;
-                    if (token[0] == 'S' || token[0] == 's') {
-                        try {
-                            current_ma = stod(token.substr(1));
-                        } catch (...) {
-                            current_ma = -1.0;
-                        }
+                    if (!token.empty() && (token[0] == 'S' || token[0] == 's')) {
+                        try { current_ma = stod(token.substr(1)); } catch (...) { current_ma = -1.0; }
                     }
                 }
-                if (current_ma < 0) {
-                    cout << "M205: Provide current via S parameter (e.g., M205 S450).\n";
-                    return true;
-                }
-                if (current_ma > 30000) {
-                    cout << "M205: Requested " << current_ma << " mA exceeds 30000 mA limit.\n";
-                    return true;
-                }
+                if (current_ma < 0) { cout << "M205: Provide current via S parameter (e.g., M205 S450).\n"; return true; }
+                if (current_ma > 30000) { cout << "M205: Requested " << current_ma << " mA exceeds 30000 mA limit.\n"; return true; }
                 led.current(static_cast<int>(current_ma));
                 cout << "M205: LED current set to " << static_cast<int>(current_ma) << " mA.\n";
                 return true;
             }
             case 210: {
                 Esp32UART::ImuSample sample;
-                if (uart.getImuSample(sample)) {
-                    print_imu_sample(sample);
-                } else {
-                    cout << "[IMU] Failed to retrieve sample.\n";
-                }
+                if (uart.getImuSample(sample)) print_imu_sample(sample);
+                else cout << "[IMU] Failed to retrieve sample.\n";
                 return true;
             }
-            case 211: {
+            case 211:
                 cout << "M211: Requesting IMU calibration...\n";
-                if (uart.requestImuCalibration()) {
-                    cout << "[IMU] Calibration complete.\n";
-                } else {
-                    cout << "[IMU] Calibration failed or timed out.\n";
-                }
+                if (uart.requestImuCalibration()) cout << "[IMU] Calibration complete.\n";
+                else cout << "[IMU] Calibration failed or timed out.\n";
                 return true;
-            }
             default:
                 break;
         }
         return false;
     };
 
-    // ===== 4) Command loop =====
     cout << "G-code ready. Examples: `G0 R100 T100 Z100`, `G1 Z-200 FR120000`, `G33 A9`, `M114`, `M112`.\n";
     cout << "Comments with ';' are ignored. Ctrl-D to exit.\n";
 
@@ -534,10 +591,9 @@ int main() {
 
         cout << "Executing: " << cmd_from_queue << "\n";
 
-        // Tokenize
         istringstream iss(cmd_from_queue);
         string head; iss >> head;
-        if (head.empty()) return; // Skip empty commands from queue
+        if (head.empty()) return;
         std::transform(head.begin(), head.end(), head.begin(), ::toupper);
 
         auto bail_if_abort = [&](){
@@ -549,402 +605,286 @@ int main() {
             while (stream >> token) {
                 for (char ch : token) {
                     ch = static_cast<char>(std::toupper(ch));
-                    if (ch == 'R' || ch == 'T' || ch == 'Z' || ch == 'A') {
-                        axes.push_back(ch);
-                    }
+                    if (ch == 'R' || ch == 'T' || ch == 'Z' || ch == 'A') axes.push_back(ch);
                 }
             }
             return axes;
         };
 
         try {
-                // ===== M-codes =====
-                if (head[0] == 'M') {
-                    int mnum = stoi(head.substr(1));
-                    switch (mnum) {
-                        case 17: motors_enable(); cout << "M17: Motors enabled.\n"; break;
-                        case 18: {
-                            auto axes = parse_axis_args(iss);
-                            motors_disable(axes);
-                            cout << "M18: Motors disabled.\n";
-                            break;
-                        }
-                        case 112:
-                            cout << "M112: EMERGENCY STOP.\n";
-                            trigger_estop();
-                            perform_shutdown(false);
-                            return;
-                        case 114: { // report positions/targets
-                            auto report = [&](const char* name, TicController& c) {
-                                try {
-                                    auto cur = c.getCurrentPosition();
-                                    auto tgt = c.getTargetPosition();
-                                    cout << name << "  cur=" << cur << "  tgt=" << tgt << "\n";
-                                } catch (const std::exception& e) {
-                                    cout << name << "  [read error] " << e.what() << "\n";
-                                }
-                            };
-                            cout << "---- M114 ----\n";
-                            report("R_tw", tic_tw_r); report("R_cw", tic_cw_r);
-                            report("T_tw", tic_tw_t); report("T_cw", tic_cw_t);
-                            report("Z_tw1", tic_tw_z1); report("Z_tw2", tic_tw_z2);
-                            report("Z_cw1", tic_cw_z1); report("Z_cw2", tic_cw_z2);
-                            cout << "--------------\n";
-                            break;
-                        }
-                        case 116: { // M116: show current feed rates per axis
-                            auto getF = [&](char k, double fallback)->double {
-                                auto it = F_axis.find(k);
-                                return (it == F_axis.end()) ? fallback : it->second;
-                            };
-                            double fr = getF('R', F_global);
-                            double ft = getF('T', F_global);
-                            double fz = getF('Z', F_global);
-                            double fa = getF('A', 0.0); // RPM for A
-
-                            cout << "---- M116: Feed Rates ----\n";
-                            cout << "F (global): " << F_global << "  [applies to R/T/Z unless overridden]\n";
-                            cout << "FR (R)    : " << fr << "       [range 0 .. " << STEPPER_RT_MAXVELOCITY << "]\n";
-                            cout << "FT (T)    : " << ft << "       [range 0 .. " << STEPPER_RT_MAXVELOCITY << "]\n";
-                            cout << "FZ (Z)    : " << fz << "       [range 0 .. " << STEPPER_Z_MAXVELOCITY  << "]\n";
-                            cout << "FA (A)    : " << fa << " rpm   [range " << A_RPM_MIN << " .. " << A_RPM_MAX << " rpm]\n";
-                            cout << "Note: R/T/Z use setMaxSpeed(feed) then setTargetPosition(...). A uses setThetaVelocity(pps).\n";
-                            cout << "---------------------------\n";
-                            break;
-                        }
-                        case 30: {//M30 : End program
-                            cout << "M30: Program complete. Exiting G-Code Mode.\n";
-                            motors_disable();
-                            perform_shutdown(true);
-                            return;
-                        }
-                        case 200: led.configure();led.current(450);dlp.configure(); cout << "M200: Projector ON (configured).\n"; break;
-                        case 205: {
-                            double current_ma = -1.0;
-                            string token;
-                            while (iss >> token) {
-                                if (token.empty()) continue;
-                                if (token[0] == 'S' || token[0] == 's') {
-                                    try {
-                                        current_ma = stod(token.substr(1));
-                                    } catch (...) {
-                                        current_ma = -1.0;
-                                    }
-                                }
-                            }
-                            if (current_ma < 0) {
-                                cout << "M205: Provide current via S parameter (e.g., M205 S450).\n";
-                                break;
-                            }
-                            if (current_ma > 30000) {
-                                cout << "M205: Requested " << current_ma << " mA exceeds 30000 mA limit.\n";
-                                break;
-                            }
-                            led.current(static_cast<int>(current_ma));
-                            cout << "M205: LED current set to " << static_cast<int>(current_ma) << " mA.\n";
-                            break;
-                        }
-                        case 201: dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);led.stop(); cout << "M201: Projector OFF.\n"; break;
-                        case 202: system("xdotool search --name ProjectorVideo windowactivate --sync key space"); cout << "M202: Projector video PLAY/TOGGLE.\n"; break;
-                        case 203: system("xdotool search --name ProjectorVideo windowactivate --sync key space"); cout << "M203: Projector video PAUSE/TOGGLE.\n"; break;
-                        case 204: system("xdotool search --name ProjectorVideo windowactivate --sync key home");  cout << "M204: Projector video RESTART.\n"; break;
-                        case 999:
-                            cout << "M999: Halt and hold all axes.\n";
-                            trigger_estop();
-                            break;
-                        case 210: {
-                            Esp32UART::ImuSample sample;
-                            if (uart.getImuSample(sample)) {
-                                print_imu_sample(sample);
-                            } else {
-                                cout << "[IMU] Failed to retrieve sample.\n";
-                            }
-                            break;
-                        }
-                        case 211: {
-                            cout << "M211: Requesting IMU calibration...\n";
-                            if (uart.requestImuCalibration()) {
-                                cout << "[IMU] Calibration complete.\n";
-                            } else {
-                                cout << "[IMU] Calibration failed or timed out.\n";
-                            }
-                            break;
-                        }
-                        default:  cerr << "Unknown M" << mnum << "\n"; break;
+            if (head[0] == 'M') {
+                int mnum = stoi(head.substr(1));
+                switch (mnum) {
+                    case 17: motors_enable(); cout << "M17: Motors enabled.\n"; break;
+                    case 18: {
+                        auto axes = parse_axis_args(iss);
+                        motors_disable(axes);
+                        cout << "M18: Motors disabled.\n";
+                        break;
                     }
-                    return; // M-codes don't need to wait for motion
-                }
-
-                // ===== G-codes =====
-                if (head[0] != 'G') {
-                    cerr << "Unknown command head: " << head << "\n";
-                    return;
-                }
-
-                int gnum = stoi(head.substr(1));
-
-                // collect remaining tokens as key/values
-                vector<pair<char,double>> params;
-                string tok;
-                while (iss >> tok) {
-                    if (tok.empty()) continue;
-                    tok[0] = static_cast<char>(toupper(tok[0]));
-                    if (tok[0] == 'F') {
-                        if ((tok.size() > 1) && (isdigit(tok[1]) || tok[1] == '-')) {
-                            // Case 1: Global F word (F100000)
+                    case 112:
+                        cout << "M112: EMERGENCY STOP.\n";
+                        trigger_estop();
+                        perform_shutdown(false);
+                        return;
+                    case 900:
+                        safe_shutdown_m900();
+                        return;
+                    case 114: {
+                        auto report = [&](const char* name, TicController& c) {
                             try {
-                                double v = stod(tok.substr(1));
-                                F_global = v;
-                                F_axis['R'] = F_axis['T'] = F_axis['Z'] = F_global;
-                                cout << "F: Global feed set to " << v << "\n";
-                            } catch (...) {
-                                cerr << "Ignoring invalid F token: " << tok << "\n";
+                                auto cur = c.getCurrentPosition();
+                                auto tgt = c.getTargetPosition();
+                                cout << name << "  cur=" << cur << "  tgt=" << tgt << "\n";
+                            } catch (const std::exception& e) {
+                                cout << name << "  [read error] " << e.what() << "\n";
                             }
-                        } else if (tok.size() >= 2 && isalpha(tok[1])) {
-                            // Case 2: Per-axis F word (FR10000, FA9)
-                            char ax = static_cast<char>(toupper(tok[1]));
-                            double fv = 0.0;
-                            try { fv = stod(tok.substr(2)); } catch(...) { fv = 0.0; }
-                            
-                            if (ax == 'A') {
-                                if (fv < A_RPM_MIN || fv > A_RPM_MAX) {
-                                    cout << "[RANGE] FA " << fv << " RPM not in ["
-                                         << A_RPM_MIN << ", " << A_RPM_MAX << "] ? ignoring.\n";
-                                } else {
-                                    F_axis['A'] = fv;
-                                    cout << "FA: rotation feed set to " << fv << " RPM\n";
-                                }
-                            } else {
-                                const uint32_t cap = axis_max_speed(ax);
-                                if (fv < 0.0 || fv > static_cast<double>(cap)) {
-                                    cout << "[RANGE] F" << ax << " " << fv
-                                         << " not in [0, " << cap << "] ? ignoring.\n";
-                                } else {
-                                    F_axis[ax] = fv;
-                                    cout << "F" << ax << ": feed set to " << fv << "\n";
-                                }
-                            }
-                        } else {
-                             cerr << "Ignoring malformed F token: " << tok << "\n";
-                        }
-                        continue; // F-words are not G-code params, so skip to next token
-                    }
-
-                    // --- Default parameter parsing (R, T, Z, etc.) ---
-                    char k; double v;
-                    if (parse_param(tok, k, v)) {
-                        params.emplace_back(k, v);
-                    } else {
-                        cerr << "Ignoring token: " << tok << "\n";
-                    }
-                }
-                switch (gnum) {
-                    case 0: { // G0 rapid at axis caps
-                        bool hasR=false, hasT=false, hasZ=false;
-                        double Rv=0, Tv=0, Zv=0;
-
-                        for (auto& kv : params) {
-                            switch (kv.first) {
-                                case 'R': hasR=true; Rv=kv.second; break;
-                                case 'T': hasT=true; Tv=kv.second; break;
-                                case 'Z': hasZ=true; Zv=kv.second; break;
-                                default: break;
-                            }
-                        }
-
-                        // R
-                        if (hasR) {
-                            int32_t target = absolute_mode ? static_cast<int32_t>(Rv)
-                                                        : get_axis_pos('R') + static_cast<int32_t>(Rv);
-                            int32_t min_pos = 0;
-                            int32_t max_pos = 0;
-                            if (axis_soft_limits('R', min_pos, max_pos) &&
-                                (target < min_pos || target > max_pos)) {
-                                cout << "[RANGE] G0 R target " << target
-                                     << " outside [" << min_pos << ", " << max_pos << "] ? skipping.\n";
-                            } else {
-                                ensure_ready(AX_R);
-                                AX_R.setMaxSpeed(axis_max_speed('R'));   // force rapid cap
-                                AX_R.setTargetPosition(target);          // go!
-                                cout << "[G0] R rapid -> " << target
-                                    << " @ " << axis_max_speed('R') << "\n";
-                            }
-                        }
-
-                        // T
-                        if (hasT) {
-                            int32_t target = absolute_mode ? static_cast<int32_t>(Tv)
-                                                        : get_axis_pos('T') + static_cast<int32_t>(Tv);
-                            int32_t min_pos = 0;
-                            int32_t max_pos = 0;
-                            if (axis_soft_limits('T', min_pos, max_pos) &&
-                                (target < min_pos || target > max_pos)) {
-                                cout << "[RANGE] G0 T target " << target
-                                     << " outside [" << min_pos << ", " << max_pos << "] ? skipping.\n";
-                            } else {
-                                ensure_ready(AX_T);
-                                AX_T.setMaxSpeed(axis_max_speed('T'));   // force rapid cap
-                                AX_T.setTargetPosition(target);
-                                cout << "[G0] T rapid -> " << target
-                                    << " @ " << axis_max_speed('T') << "\n";
-                            }
-                        }
-
-                        // Z
-                        if (hasZ) {
-                            int32_t target = absolute_mode ? static_cast<int32_t>(Zv)
-                                                        : get_axis_pos('Z') + static_cast<int32_t>(Zv);
-                            int32_t min_pos = 0;
-                            int32_t max_pos = 0;
-                            if (axis_soft_limits('Z', min_pos, max_pos) &&
-                                (target < min_pos || target > max_pos)) {
-                                cout << "[RANGE] G0 Z target " << target
-                                     << " outside [" << min_pos << ", " << max_pos << "] ? skipping.\n";
-                            } else {
-                                ensure_ready(AX_Z);
-                                AX_Z.setMaxSpeed(axis_max_speed('Z'));   // force rapid cap
-                                AX_Z.setTargetPosition(target);
-                                cout << "[G0] Z rapid -> " << target
-                                    << " @ " << axis_max_speed('Z') << "\n";
-                            }
-                        }
+                        };
+                        cout << "---- M114 ----\n";
+                        report("R_tw", tic_tw_r); report("R_cw", tic_cw_r);
+                        report("T_tw", tic_tw_t); report("T_cw", tic_cw_t);
+                        report("Z_tw1", tic_tw_z1); report("Z_tw2", tic_tw_z2);
+                        report("Z_cw1", tic_cw_z1); report("Z_cw2", tic_cw_z2);
+                        cout << "--------------\n";
                         break;
                     }
-
-                    case 1: { // G1 linear at per-axis feed (validations in move_axis/try_apply_axis_speed)
-                        bool hasR=false, hasT=false, hasZ=false;
-                        double Rv=0, Tv=0, Zv=0;
-
-                        for (auto& kv : params) {
-                            switch (kv.first) {
-                                case 'R': hasR=true; Rv=kv.second; break;
-                                case 'T': hasT=true; Tv=kv.second; break;
-                                case 'Z': hasZ=true; Zv=kv.second; break;
-                                default: break;
-                            }
-                        }
-
-                        if (hasR) {
-                            int32_t target = absolute_mode ? static_cast<int32_t>(Rv)
-                                                        : get_axis_pos('R') + static_cast<int32_t>(Rv);
-                            move_axis('R', AX_R, target);   // uses per-axis feed / checks
-                        }
-                        if (hasT) {
-                            int32_t target = absolute_mode ? static_cast<int32_t>(Tv)
-                                                        : get_axis_pos('T') + static_cast<int32_t>(Tv);
-                            move_axis('T', AX_T, target);
-                        }
-                        if (hasZ) {
-                            int32_t target = absolute_mode ? static_cast<int32_t>(Zv)
-                                                        : get_axis_pos('Z') + static_cast<int32_t>(Zv);
-                            move_axis('Z', AX_Z, target);
-                        }
+                    case 30:
+                        cout << "M30: Program complete. Exiting G-Code Mode.\n";
+                        motors_disable();
+                        perform_shutdown(true);
+                        return;
+                    case 999:
+                        cout << "M999: Halt and hold all axes.\n";
+                        trigger_estop();
                         break;
-                    }
-
-                    case 4: { // G4 dwell: Pms
-                        double Pms = 0;
-                        for (auto& kv : params) if (kv.first=='P') Pms = kv.second;
-                        int ms = static_cast<int>(max(0.0, Pms));
-                        cout << "G4 dwell " << ms << " ms\n";
-                        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-                        break;
-                    }
-
-                    case 5: { // G5 wait until RPM reached (CUSTOM, simple dwell)
-                        double target_rpm = (F_axis.count('A') ? F_axis['A'] : 0.0);
-                        if (target_rpm < A_RPM_MIN || target_rpm > A_RPM_MAX) {
-                            cout << "[RANGE] A feed " << target_rpm << " RPM not in ["
-                                << A_RPM_MIN << ", " << A_RPM_MAX
-                                << "] ? cannot wait, value invalid.\n";
-                        } else {
-                            cout << "G5: wait for A steady-state (" << target_rpm << " rpm)\n";
-                            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-                        }
-                        break;
-                    }
-
-                    case 6: { // G6 wait until print completion (stub)
-                        cout << "G6: wait until print completion (stub)\n";
-                        break;
-                    }
-
-                    case 28: { // G28 homing ? ensure max speeds before homing
-                        cout << "G28: homing R/T/Z\n";
-                        // Force caps so homing is never limited by prior G1 feeds
-                        AX_R.setMaxSpeed(axis_max_speed('R'));
-                        AX_T.setMaxSpeed(axis_max_speed('T'));
-                        AX_Z.setMaxSpeed(axis_max_speed('Z'));
-                        zeroAxisPair(tic_tw_r, tic_cw_r, HOME_DIR_R, HOME_OFF_R);
-                        zeroAxisPair(tic_tw_t, tic_cw_t, HOME_DIR_T, HOME_OFF_T);
-                        zeroAxisPair(tic_tw_z1, tic_tw_z2, tic_cw_z1, tic_cw_z2, HOME_DIR_Z, HOME_OFF_Z);
-                        break;
-                    }
-
-                    case 33: { // G33 A<rpm> continuous rotation
-                        double rpm = 0;
-                        for (auto& kv : params) if (kv.first=='A') rpm = kv.second;
-                        if (rpm < A_RPM_MIN || rpm > A_RPM_MAX) {
-                            cout << "[RANGE] G33 A " << rpm << " RPM not in ["
-                                << A_RPM_MIN << ", " << A_RPM_MAX
-                                << "] ? skipping.\n";
-                        } else {
-                            int32_t pps = rpm_to_pps(rpm);
-                            uart.setThetaVelocity(pps);
-                            F_axis['A'] = rpm; // remember
-                            cout << "G33: A -> " << rpm << " rpm (pps=" << pps << ")\n";
-                        }
-                        break;
-                    }
-
-                    case 90: absolute_mode = true;  cout << "G90: absolute positioning\n"; break;
-                    case 91: absolute_mode = false; cout << "G91: relative positioning\n"; break;
-
-                    case 92: { // G92 set current position to 0 (per axis)
-                        bool any=false;
-                        for (auto& kv : params) {
-                            if (kv.first=='R' || kv.first=='T' || kv.first=='Z') {
-                                set_axis_zero(kv.first);
-                                cout << "G92: zeroed axis " << kv.first << "\n";
-                                any=true;
-                            }
-                        }
-                        if (!any) {
-                            set_axis_zero('R'); set_axis_zero('T'); set_axis_zero('Z');
-                            cout << "G92: zeroed R/T/Z\n";
-                        }
-                        break;
-                    }
-
                     default:
-                        cerr << "Unknown/unsupported G" << gnum << "\n";
+                        cerr << "Unknown M" << mnum << "\n";
                         break;
                 }
-                bail_if_abort();
+                return;
+            }
+
+            if (head[0] != 'G') {
+                cerr << "Unknown command head: " << head << "\n";
+                return;
+            }
+
+            int gnum = stoi(head.substr(1));
+
+            vector<pair<char,double>> params;
+            string tok;
+            while (iss >> tok) {
+                if (tok.empty()) continue;
+                tok[0] = static_cast<char>(toupper(tok[0]));
+                if (tok[0] == 'F') {
+                    if ((tok.size() > 1) && (isdigit(tok[1]) || tok[1] == '-')) {
+                        try {
+                            double v = stod(tok.substr(1));
+                            F_global = v;
+                            F_axis['R'] = F_axis['T'] = F_axis['Z'] = F_global;
+                            cout << "F: Global feed set to " << v << "\n";
+                        } catch (...) { cerr << "Ignoring invalid F token: " << tok << "\n"; }
+                    } else if (tok.size() >= 2 && isalpha(tok[1])) {
+                        char ax = static_cast<char>(toupper(tok[1]));
+                        double fv = 0.0;
+                        try { fv = stod(tok.substr(2)); } catch(...) { fv = 0.0; }
+
+                        if (ax == 'A') {
+                            if (fv < A_RPM_MIN || fv > A_RPM_MAX) {
+                                cout << "[RANGE] FA " << fv << " RPM not in ["
+                                     << A_RPM_MIN << ", " << A_RPM_MAX << "] ? ignoring.\n";
+                            } else {
+                                F_axis['A'] = fv;
+                                cout << "FA: rotation feed set to " << fv << " RPM\n";
+                            }
+                        } else {
+                            const uint32_t cap = axis_max_speed(ax);
+                            if (fv < 0.0 || fv > static_cast<double>(cap)) {
+                                cout << "[RANGE] F" << ax << " " << fv
+                                     << " not in [0, " << cap << "] ? ignoring.\n";
+                            } else {
+                                F_axis[ax] = fv;
+                                cout << "F" << ax << ": feed set to " << fv << "\n";
+                            }
+                        }
+                    } else {
+                        cerr << "Ignoring malformed F token: " << tok << "\n";
+                    }
+                    continue;
+                }
+
+                char k; double v;
+                if (parse_param(tok, k, v)) params.emplace_back(k, v);
+                else cerr << "Ignoring token: " << tok << "\n";
+            }
+
+            switch (gnum) {
+                case 0: {
+                    bool hasR=false, hasT=false, hasZ=false;
+                    double Rv=0, Tv=0, Zv=0;
+
+                    for (auto& kv : params) {
+                        switch (kv.first) {
+                            case 'R': hasR=true; Rv=kv.second; break;
+                            case 'T': hasT=true; Tv=kv.second; break;
+                            case 'Z': hasZ=true; Zv=kv.second; break;
+                            default: break;
+                        }
+                    }
+
+                    if (hasR) {
+                        int32_t target = absolute_mode ? static_cast<int32_t>(Rv)
+                                                      : get_axis_pos('R') + static_cast<int32_t>(Rv);
+                        int32_t min_pos = 0, max_pos = 0;
+                        if (axis_soft_limits('R', min_pos, max_pos) && (target < min_pos || target > max_pos)) {
+                            cout << "[RANGE] G0 R target " << target << " outside [" << min_pos << ", " << max_pos << "] ? skipping.\n";
+                        } else {
+                            ensure_ready(AX_R);
+                            AX_R.setMaxSpeed(axis_max_speed('R'));
+                            AX_R.setTargetPosition(target);
+                            cout << "[G0] R rapid -> " << target << " @ " << axis_max_speed('R') << "\n";
+                        }
+                    }
+
+                    if (hasT) {
+                        int32_t target = absolute_mode ? static_cast<int32_t>(Tv)
+                                                      : get_axis_pos('T') + static_cast<int32_t>(Tv);
+                        int32_t min_pos = 0, max_pos = 0;
+                        if (axis_soft_limits('T', min_pos, max_pos) && (target < min_pos || target > max_pos)) {
+                            cout << "[RANGE] G0 T target " << target << " outside [" << min_pos << ", " << max_pos << "] ? skipping.\n";
+                        } else {
+                            ensure_ready(AX_T);
+                            AX_T.setMaxSpeed(axis_max_speed('T'));
+                            AX_T.setTargetPosition(target);
+                            cout << "[G0] T rapid -> " << target << " @ " << axis_max_speed('T') << "\n";
+                        }
+                    }
+
+                    if (hasZ) {
+                        int32_t target = absolute_mode ? static_cast<int32_t>(Zv)
+                                                      : get_axis_pos('Z') + static_cast<int32_t>(Zv);
+                        int32_t min_pos = 0, max_pos = 0;
+                        if (axis_soft_limits('Z', min_pos, max_pos) && (target < min_pos || target > max_pos)) {
+                            cout << "[RANGE] G0 Z target " << target << " outside [" << min_pos << ", " << max_pos << "] ? skipping.\n";
+                        } else {
+                            ensure_ready(AX_Z);
+                            AX_Z.setMaxSpeed(axis_max_speed('Z'));
+                            AX_Z.setTargetPosition(target);
+                            cout << "[G0] Z rapid -> " << target << " @ " << axis_max_speed('Z') << "\n";
+                        }
+                    }
+                    break;
+                }
+
+                case 1: {
+                    bool hasR=false, hasT=false, hasZ=false;
+                    double Rv=0, Tv=0, Zv=0;
+
+                    for (auto& kv : params) {
+                        switch (kv.first) {
+                            case 'R': hasR=true; Rv=kv.second; break;
+                            case 'T': hasT=true; Tv=kv.second; break;
+                            case 'Z': hasZ=true; Zv=kv.second; break;
+                            default: break;
+                        }
+                    }
+
+                    if (hasR) {
+                        int32_t target = absolute_mode ? static_cast<int32_t>(Rv)
+                                                      : get_axis_pos('R') + static_cast<int32_t>(Rv);
+                        move_axis('R', AX_R, target);
+                    }
+                    if (hasT) {
+                        int32_t target = absolute_mode ? static_cast<int32_t>(Tv)
+                                                      : get_axis_pos('T') + static_cast<int32_t>(Tv);
+                        move_axis('T', AX_T, target);
+                    }
+                    if (hasZ) {
+                        int32_t target = absolute_mode ? static_cast<int32_t>(Zv)
+                                                      : get_axis_pos('Z') + static_cast<int32_t>(Zv);
+                        move_axis('Z', AX_Z, target);
+                    }
+                    break;
+                }
+
+                case 4: {
+                    double Pms = 0;
+                    for (auto& kv : params) if (kv.first=='P') Pms = kv.second;
+                    int ms = static_cast<int>(max(0.0, Pms));
+                    cout << "G4 dwell " << ms << " ms\n";
+                    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+                    break;
+                }
+
+                case 28: {
+                    cout << "G28: homing R/T/Z\n";
+                    AX_R.setMaxSpeed(axis_max_speed('R'));
+                    AX_T.setMaxSpeed(axis_max_speed('T'));
+                    AX_Z.setMaxSpeed(axis_max_speed('Z'));
+                    zeroAxisPair(tic_tw_r, tic_cw_r, HOME_DIR_R, HOME_OFF_R);
+                    zeroAxisPair(tic_tw_t, tic_cw_t, HOME_DIR_T, HOME_OFF_T);
+                    zeroAxisPair(tic_tw_z1, tic_tw_z2, tic_cw_z1, tic_cw_z2, HOME_DIR_Z, HOME_OFF_Z);
+                    break;
+                }
+
+                case 33: {
+                    double rpm = 0;
+                    for (auto& kv : params) if (kv.first=='A') rpm = kv.second;
+                    if (rpm < A_RPM_MIN || rpm > A_RPM_MAX) {
+                        cout << "[RANGE] G33 A " << rpm << " RPM not in ["
+                             << A_RPM_MIN << ", " << A_RPM_MAX << "] ? skipping.\n";
+                    } else {
+                        int32_t pps = rpm_to_pps(rpm);
+                        uart.setThetaVelocity(pps);
+                        F_axis['A'] = rpm;
+                        cout << "G33: A -> " << rpm << " rpm (pps=" << pps << ")\n";
+                    }
+                    break;
+                }
+
+                case 90: absolute_mode = true;  cout << "G90: absolute positioning\n"; break;
+                case 91: absolute_mode = false; cout << "G91: relative positioning\n"; break;
+
+                case 92: {
+                    bool any=false;
+                    for (auto& kv : params) {
+                        if (kv.first=='R' || kv.first=='T' || kv.first=='Z') {
+                            set_axis_zero(kv.first);
+                            cout << "G92: zeroed axis " << kv.first << "\n";
+                            any=true;
+                        }
+                    }
+                    if (!any) {
+                        set_axis_zero('R'); set_axis_zero('T'); set_axis_zero('Z');
+                        cout << "G92: zeroed R/T/Z\n";
+                    }
+                    break;
+                }
+
+                default:
+                    cerr << "Unknown/unsupported G" << gnum << "\n";
+                    break;
+            }
+
+            bail_if_abort();
         } catch (const std::exception& e) {
             cerr << "!! ERROR: " << e.what() << "\n";
-            // This will stop on an error. You could 'continue'
-            // to the next command instead if you prefer.
         }
 
-        bool wait_loop_error = false; // Add a flag
+        bool wait_loop_error = false;
         if (!halt_requested) {
             try {
                 while (tic_tw_r.getCurrentPosition() != tic_tw_r.getTargetPosition() ||
                        tic_tw_t.getCurrentPosition() != tic_tw_t.getTargetPosition() ||
                        tic_tw_z1.getCurrentPosition() != tic_tw_z1.getTargetPosition())
                 {
-                    if (abort_requested())
-                    {
+                    if (abort_requested()) {
                         cout << "ABORT: Halting all motion.\n";
-                        // Send an immediate halt command
                         AX_R.haltAndHold();
                         AX_T.haltAndHold();
                         AX_Z.haltAndHold();
-                        break; // Exit the wait loop
+                        break;
                     }
-                    
-                    // Sleep for 20ms to avoid busy-waiting
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 }
             } catch (const std::exception& e) {
@@ -953,16 +893,15 @@ int main() {
                 AX_R.haltAndHold();
                 AX_T.haltAndHold();
                 AX_Z.haltAndHold();
-                wait_loop_error = true; // Set the flag
+                wait_loop_error = true;
             }
         }
 
-        // If the error flag was set, nuke the queue and return
         if (wait_loop_error) {
             clear_command_queue();
             return;
         }
-        
+
         if (halt_requested) {
             cout << "[HALT] Current command stopped.\n";
             return;
@@ -977,9 +916,7 @@ int main() {
             {
                 std::unique_lock<std::mutex> lock(queue_mutex);
                 queue_cv.wait(lock, [&]{ return shutting_down || !commandQueue.empty(); });
-                if (shutting_down && commandQueue.empty()) {
-                    break;
-                }
+                if (shutting_down && commandQueue.empty()) break;
                 cmd_from_queue = std::move(commandQueue.front());
                 commandQueue.pop();
                 queue_busy.store(true);
@@ -1011,16 +948,18 @@ int main() {
     string raw;
     while (!exit_requested) {
         cout << "> " << flush;
-        if (!std::getline(cin, raw)) break; // User pressed Ctrl-D
+        if (!std::getline(cin, raw)) break;
         string line = strip_comment_and_trim(raw);
         if (line.empty()) continue;
 
         string upper_line = line;
         std::transform(upper_line.begin(), upper_line.end(), upper_line.begin(), ::toupper);
+
         if (handle_immediate_command(line)) {
             if (exit_requested) break;
             continue;
         }
+
         if (queue_busy.load() && upper_line == "M999") {
             trigger_estop();
             clear_command_queue();
@@ -1033,9 +972,7 @@ int main() {
             std::lock_guard<std::mutex> lock(queue_mutex);
             bool busy = queue_busy.load();
             commandQueue.push(line);
-            if (busy) {
-                cout << "Command queued.\n";
-            }
+            if (busy) cout << "Command queued.\n";
         }
         queue_cv.notify_one();
     }
@@ -1044,13 +981,16 @@ int main() {
     queue_cv.notify_all();
     command_worker.join();
 
-    // ===== 5) Cleanup =====
+    // ===== Cleanup =====
     cout << "Shutting down...\n";
     uart.setThetaVelocity(0);
     dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
     led.stop();
-    for (auto* m : all) m->deenergize();
-    restore_terminal();
+    for (auto* m : all) {
+        try { m->deenergize(); } catch (...) {}
+    }
+
+    // Restore terminal settings LAST (once)
+    restore_terminal_once();
     return 0;
 }
-
