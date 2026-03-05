@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QToolButton, QMessageBox, QInputDialog, QLineEdit, QFileDialog
 )
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QSize, QDateTime, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, QDateTime, pyqtSignal, QThread
 
 from backend.ssh_worker import SSHWorker
 from pages.upload_page import UploadPage
@@ -191,6 +191,45 @@ class PlaceholderPage(QWidget):
         label.setObjectName("Page_Title")
         layout.addWidget(label)
 
+class GCodeStreamer(QThread):
+    """
+    A QThread that reads a G-code file and streams it line-by-line
+    to the SSH worker.
+    """
+    finished = pyqtSignal()
+    log_message = pyqtSignal(str, str)
+
+    def __init__(self, file_path, ssh_worker, parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.ssh_worker = ssh_worker
+        self._is_running = True
+
+    def run(self):
+        self.log_message.emit(f"Starting G-code stream from: {os.path.basename(self.file_path)}", "INFO")
+        try:
+            with open(self.file_path, 'r') as f:
+                for line in f:
+                    if not self._is_running:
+                        self.log_message.emit("G-code stream cancelled by user.", "WARNING")
+                        break
+                    
+                    line = line.strip()
+                    if line and not line.startswith(';'):
+                        self.ssh_worker.send_gcode(line)
+                        self.msleep(50) 
+            
+            if self._is_running:
+                self.log_message.emit("G-code stream finished.", "SUCCESS")
+
+        except Exception as e:
+            self.log_message.emit(f"Error during G-code streaming: {e}", "ERROR")
+        
+        self.finished.emit()
+
+    def stop(self):
+        self._is_running = False
+
 # --- Main Application Window --- 
 class MainWindow(QMainWindow):
     upload_complete = pyqtSignal()
@@ -203,6 +242,7 @@ class MainWindow(QMainWindow):
 
         # Early initialization of output_log to prevent race condition during startup
         self.output_log = QTextEdit()
+        self.gcode_streamer = None
 
         self.job_data = {}
         self.is_connected = False
@@ -354,6 +394,26 @@ class MainWindow(QMainWindow):
 
         self.append_log(f"Requesting remote video playback for: {path}", "INFO")
         self.ssh_worker.play_remote_video(path)
+
+    def start_gcode_streaming(self, file_path):
+        """Initializes and starts the GCodeStreamer thread."""
+        if not self.is_connected:
+            self.append_log("Cannot stream G-code, not connected.", "ERROR")
+            return
+
+        if self.gcode_streamer and self.gcode_streamer.isRunning():
+            self.append_log("A G-code stream is already in progress.", "WARNING")
+            return
+
+        self.gcode_streamer = GCodeStreamer(file_path, self.ssh_worker)
+        self.gcode_streamer.log_message.connect(self.append_log)
+        self.gcode_streamer.finished.connect(self.on_gcode_stream_finished)
+        self.gcode_streamer.start()
+
+    def on_gcode_stream_finished(self):
+        """Cleans up after the G-code streamer is done."""
+        self.append_log("G-code streaming thread has finished.", "INFO")
+        self.gcode_streamer = None
 
     def upload_video_for_playback(self):
         """Opens a dialog to upload a video for immediate remote playback."""
