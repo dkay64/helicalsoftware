@@ -1,5 +1,8 @@
 import sys
 import os
+import platform
+import cv2
+import paramiko
 from PyQt5.QtWidgets import (
     QApplication,
     QWidget,
@@ -12,11 +15,117 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QStackedWidget,
 )
-from PyQt5.QtGui import QFont, QIcon, QPixmap
+from PyQt5.QtGui import QFont, QIcon, QImage, QPixmap
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QTime, QSize, QUrl
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+if platform.system() == "Darwin":
+    os.environ["DYLD_LIBRARY_PATH"] = "/opt/homebrew/lib"
 
+import mpv
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+                             QFrame, QPushButton) # Add whatever else you already have
+from PyQt5.QtCore import pyqtSignal, Qt
+
+class JetsonController(QThread):
+    def __init__(self, script_name):
+        super().__init__()
+        self.script_name = script_name
+        # Replace or hide somehow
+        self.host = "*" #ENTER DEETS BEFORE RUNNING
+        self.user = "*"
+        self.password = "*"
+    def run(self):
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(self.host, username=self.user, password=self.password)
+            
+            # This chains the commands exactly like you do in the terminal.
+            # 'nohup' keeps it running even after we close the SSH connection.
+            command = f"cd Desktop && nohup ./{self.script_name} > /dev/null 2>&1 &"
+            
+            ssh.exec_command(command)
+            ssh.close()
+        except Exception as e:
+            print(f"Jetson SSH Error: {e}")
+
+class VideoStreamWorker(QThread):
+    change_pixmap_signal = pyqtSignal(QImage)
+
+    def __init__(self, rtsp_url, parent=None):
+        super().__init__(parent)
+        self.rtsp_url = rtsp_url
+        self._is_running = True
+
+    def run(self):
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+        cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+        while self._is_running and cap.isOpened():
+            ret, cv_img = cap.read()
+            if ret:
+                rgb_image = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb_image.shape
+                bytes_per_line = ch * w
+                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                scaled_image = qt_image.scaled(400, 320, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.change_pixmap_signal.emit(scaled_image)
+            else:
+                break
+        cap.release()
+
+    def stop(self):
+        self._is_running = False
+
+class EmbeddedVideoWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # QHBoxLayout + addStretch is the secret to perfect horizontal centering
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.image_label = QLabel(self)
+        self.image_label.setAlignment(Qt.AlignCenter)
+        
+        # Add stretches to "squeeze" the label into the center
+        self.layout.addStretch()
+        self.layout.addWidget(self.image_label)
+        self.layout.addStretch()
+        
+        self.worker = None
+        self.set_offline_style()
+
+    def set_offline_style(self):
+        self.image_label.clear()
+        self.image_label.setText("JETSON OFFLINE")
+        # Portrait placeholder size
+        self.image_label.setFixedSize(200, 320) 
+        self.image_label.setStyleSheet(
+            "background-color: #000000; color: #71717a; font-weight: bold; border-radius: 12px;"
+        )
+
+    def play(self, url):
+        self.stop() 
+        self.image_label.clear()
+        self.worker = VideoStreamWorker(url)
+        self.worker.change_pixmap_signal.connect(self.update_image)
+        self.worker.start()
+
+    def update_image(self, qt_img):
+        pixmap = QPixmap.fromImage(qt_img)
+        self.image_label.setPixmap(pixmap)
+        # This forces the black box to be ONLY as wide as the video pixels
+        self.image_label.setFixedSize(pixmap.size())
+
+    def stop(self):
+        if self.worker:
+            try:
+                self.worker.change_pixmap_signal.disconnect()
+            except:
+                pass
+            self.worker.stop()
+            self.worker = None
+        self.set_offline_style()
 
 # --- Constants and Styling ---
 STYLESHEET = """
@@ -235,7 +344,7 @@ class DisplayPage(QWidget):
         video_layout.setSpacing(20)
         video_layout.addStretch()
         video_layout.addLayout(self.create_reference_video_feed())
-        video_layout.addLayout(self.create_camera_placeholder())
+        video_layout.addLayout(self.create_live_camera_feed())
         video_layout.addStretch()
         main_layout.addLayout(video_layout)
 
@@ -296,15 +405,30 @@ class DisplayPage(QWidget):
         feed_layout.addWidget(self.video_stack)
         return feed_layout
 
-    def create_camera_placeholder(self):
+    def create_live_camera_feed(self):
         feed_layout = QVBoxLayout()
-        feed_layout.addWidget(QLabel("Live Camera Feed", objectName="VideoFeedLabel"))
+        header = QLabel("Live Camera Feed", objectName="VideoFeedLabel")
+        header.setAlignment(Qt.AlignCenter)
+        feed_layout.addWidget(header)
         
-        placeholder = QLabel("LIVE FEED OFFLINE")
-        placeholder.setObjectName("CameraPlaceholder")
-        placeholder.setAlignment(Qt.AlignCenter)
+        # WE DEFINE IT HERE AS self.camera_view
+        self.camera_view = EmbeddedVideoWidget()
+        feed_layout.addWidget(self.camera_view)
+
+        btn_layout = QHBoxLayout()
+        self.btn_start_cv = QPushButton("START METROLOGY FEED")
+        self.btn_start_cv.setStyleSheet("background-color: #3f3f46; color: white; font-weight: bold; padding: 10px; border-radius: 6px;")
+        self.btn_start_cv.clicked.connect(self.start_cv_feed)
         
-        feed_layout.addWidget(placeholder)
+        self.btn_stop_cam = QPushButton("STOP")
+        self.btn_stop_cam.setStyleSheet("background-color: #991b1b; color: white; font-weight: bold; padding: 10px; border-radius: 6px;")
+        self.btn_stop_cam.clicked.connect(self.stop_camera_feed)
+        self.btn_stop_cam.setEnabled(False)
+        
+        btn_layout.addWidget(self.btn_start_cv)
+        btn_layout.addWidget(self.btn_stop_cam)
+        feed_layout.addLayout(btn_layout)
+        
         return feed_layout
 
     def set_video_source(self, file_path):
@@ -407,14 +531,34 @@ class DisplayPage(QWidget):
         
         # This is a critical safety message, sent via main_window
         self.main_window.send_command("M112")
-            
+
+    def start_cv_feed(self):
+        self.jetson = JetsonController("~/Desktop/start_camera_stream.sh")
+        self.jetson.start() 
+        
+        self.log_message.emit("Waking up Jetson camera...", "INFO")
+        QTimer.singleShot(1000, self.connect_opencv_stream)
+
+    def connect_opencv_stream(self):
+        # Now self.camera_view will exist!
+        rtsp_url = "rtsp://admin:password@192.168.0.116:8554/cam" # Update your IP
+        self.camera_view.play(rtsp_url)
+        
+        self.btn_start_cv.setEnabled(False)
+        self.btn_stop_cam.setEnabled(True)
+        
+    def stop_camera_feed(self):
+        self.camera_view.stop()
+        self.btn_start_cv.setEnabled(True)
+        self.btn_stop_cam.setEnabled(False)
+
     def cleanup(self):
-        # Full stop of everything on window close
         self.job_timer.stop()
         if self.media_player:
             self.media_player.stop()
             self.media_player.setMedia(QMediaContent(None))
         self.sensor_worker.stop()
+        self.stop_camera_feed()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
