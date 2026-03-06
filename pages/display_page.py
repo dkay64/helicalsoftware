@@ -22,7 +22,7 @@ from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 if platform.system() == "Darwin":
     os.environ["DYLD_LIBRARY_PATH"] = "/opt/homebrew/lib"
 
-import mpv
+# import mpv
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QFrame, QPushButton) # Add whatever else you already have
 from PyQt5.QtCore import pyqtSignal, Qt
