@@ -19,10 +19,11 @@ from PyQt5.QtGui import QFont, QIcon, QImage, QPixmap
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QTime, QSize, QUrl
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+
 if platform.system() == "Darwin":
     os.environ["DYLD_LIBRARY_PATH"] = "/opt/homebrew/lib"
 
-# import mpv
+import mpv
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QFrame, QPushButton) # Add whatever else you already have
 from PyQt5.QtCore import pyqtSignal, Qt
@@ -57,110 +58,36 @@ class JetsonController(QThread):
         except Exception as e:
             print(f"Jetson SSH Error: {e}")
 
-class VideoStreamWorker(QThread):
-    change_pixmap_signal = pyqtSignal(QImage)
+import mpv
+from PyQt5.QtWidgets import QWidget
+from PyQt5.QtCore import Qt
 
-    def __init__(self, rtsp_url, parent=None):
-        super().__init__(parent)
-        self.rtsp_url = rtsp_url
-        self._is_running = True
+import mpv
+from PyQt5.QtWidgets import QWidget
+from PyQt5.QtCore import Qt
 
-    def run(self):
-        # LOW LATENCY FLAGS
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = ( "rtsp_transport;tcp|probesize;32|analyzeduration;0|fflags;nobuffer|flags;low_delay|hwaccel;videotoolbox")
-        cap = None
-        for i in range(5):
-            if not self._is_running: return
-            cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-            if cap.isOpened():
-                break
-            cap.release()
-            print(f"Attempt {i+1}: Stream not ready, retrying...")
-            self.msleep(1500) # Wait 1.5 seconds between tries
-
-        if not cap or not cap.isOpened():
-            print("Failed to connect after 5 attempts.")
-            return
-
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) # This is the "no-cache" hardware setting   
-
-        while self._is_running and cap.isOpened():
-            # THE MAGIC FIX: 
-            # cap.grab() is way faster than cap.read() because it doesn't decode the frame.
-            # We "grab" everything currently sitting in the buffer to throw it away,
-            # then we only "retrieve" (decode) the most recent one.
-            if not cap.grab():
-                break
-                
-            # If there are more frames waiting, keep grabbing until we hit the "head" of the stream
-            # This simulates MPV's --untimed and --no-cache behavior.
-            ret, cv_img = cap.retrieve()
-
-            if ret:
-                rgb_image = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-                h, w, ch = rgb_image.shape
-                qt_image = QImage(rgb_image.data, w, h, ch * w, QImage.Format_RGB888)
-                scaled_image = qt_image.scaledToHeight(320, Qt.SmoothTransformation)
-                self.change_pixmap_signal.emit(scaled_image)
-            
-            # Optional: Add a tiny sleep to prevent 100% CPU usage if the loop is too fast
-            # self.msleep(1)
-            
-        cap.release()
-
-    def stop(self):
-        self._is_running = False
-        self.wait()
-
-class EmbeddedVideoWidget(QWidget):
+class MpvVideoWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # QHBoxLayout + addStretch is the secret to perfect horizontal centering
-        self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.setAttribute(Qt.WA_DontCreateNativeAncestors)
+        self.setAttribute(Qt.WA_NativeWindow)
         
-        self.image_label = QLabel(self)
-        self.image_label.setAlignment(Qt.AlignCenter)
-        
-        # Add stretches to "squeeze" the label into the center
-        self.layout.addStretch()
-        self.layout.addWidget(self.image_label)
-        self.layout.addStretch()
-        
-        self.worker = None
-        self.set_offline_style()
-
-    def set_offline_style(self):
-        self.image_label.clear()
-        self.image_label.setText("JETSON OFFLINE")
-        # Portrait placeholder size
-        self.image_label.setFixedSize(200, 320) 
-        self.image_label.setStyleSheet(
-            "background-color: #000000; color: #71717a; font-weight: bold; border-radius: 12px;"
+        # Removed 'vo' and 'log_handler' to let macOS auto-detect the renderer
+        self.player = mpv.MPV(
+            wid=str(int(self.winId())),
+            profile='low-latency',
+            untimed=True,
+            cache='no',
+            rtsp_transport='tcp'
         )
+        
+        self.setStyleSheet("background-color: #000000; border-radius: 12px;")
 
     def play(self, url):
-        self.stop() 
-        self.image_label.clear()
-        self.worker = VideoStreamWorker(url)
-        self.worker.change_pixmap_signal.connect(self.update_image)
-        self.worker.start()
-
-    def update_image(self, qt_img):
-        pixmap = QPixmap.fromImage(qt_img)
-        self.image_label.setPixmap(pixmap)
-        # This forces the black box to be ONLY as wide as the video pixels
-        self.image_label.setFixedSize(pixmap.size())
+        self.player.play(url)
 
     def stop(self):
-        if self.worker:
-            try:
-                self.worker.change_pixmap_signal.disconnect()
-            except:
-                pass
-            self.worker.stop()
-            self.worker = None
-        self.set_offline_style()
+        self.player.stop()
 
 # --- Constants and Styling ---
 STYLESHEET = """
@@ -446,8 +373,7 @@ class DisplayPage(QWidget):
         header.setAlignment(Qt.AlignCenter)
         feed_layout.addWidget(header)
         
-        # WE DEFINE IT HERE AS self.camera_view
-        self.camera_view = EmbeddedVideoWidget()
+        self.camera_view = MpvVideoWidget() # O
         feed_layout.addWidget(self.camera_view)
 
         btn_layout = QHBoxLayout()
@@ -572,18 +498,27 @@ class DisplayPage(QWidget):
         self.jetson.start() 
         
         self.log_message.emit("Waking up Jetson camera...", "INFO")
-        QTimer.singleShot(1000, self.connect_opencv_stream)
+        QTimer.singleShot(7000, self.connect_stream)
 
-    def connect_opencv_stream(self):
-        # Now self.camera_view will exist!
-        rtsp_url = "rtsp://192.168.0.116:8554/cam" # Update your IP
+    def connect_stream(self):
+        rtsp_url = "rtsp://192.168.0.116:8554/cam"
+        # Just pass the URL. MPV takes over instantly.
         self.camera_view.play(rtsp_url)
         
         self.btn_start_cv.setEnabled(False)
         self.btn_stop_cam.setEnabled(True)
-        
+
     def stop_camera_feed(self):
-        self.camera_view.stop()
+        # Instantly stops the MPV renderer
+        if hasattr(self, 'camera_view'):
+            self.camera_view.stop()
+        
+        # Tell the Jetson to kill the server process
+        stop_cmd = "pkill -f start_camera_stream.sh || true; pkill -f v4l2-rtsp-server || true"
+        self.jetson_killer = JetsonController("STOP") 
+        self.jetson_killer.custom_cmd = stop_cmd 
+        self.jetson_killer.start()
+
         self.btn_start_cv.setEnabled(True)
         self.btn_stop_cam.setEnabled(False)
 

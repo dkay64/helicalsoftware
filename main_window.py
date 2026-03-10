@@ -15,6 +15,7 @@ from pages.run_page import RunPage
 from pages.display_page import DisplayPage
 from pages.advanced_page import AdvancedPage
 from components.jog_dialog import JogDialog
+from pages.metrology_page import MetrologyPage
 
 def load_stylesheet(app):
     """Loads the global QSS stylesheet for the application."""
@@ -234,6 +235,7 @@ class MainWindow(QMainWindow):
         self.setup_page = SetupPage(main_window=self)
         self.run_page = RunPage(main_window=self)
         self.display_page = DisplayPage(main_window=self)
+        self.metrology_page = MetrologyPage(main_window=self)
         self.advanced_page = AdvancedPage(main_window=self)
         
         # --- Page Connections ---
@@ -247,6 +249,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.setup_page)
         self.stacked_widget.addWidget(self.run_page)
         self.stacked_widget.addWidget(self.display_page)
+        self.stacked_widget.addWidget(self.metrology_page)
         self.stacked_widget.addWidget(self.advanced_page)
 
         # Connect log signals
@@ -254,6 +257,7 @@ class MainWindow(QMainWindow):
         self.setup_page.log_message.connect(self.append_log)
         self.run_page.log_message.connect(self.append_log)
         self.display_page.log_message.connect(self.append_log)
+        self.metrology_page.log_message.connect(self.append_log)
         self.advanced_page.log_message.connect(self.append_log)
         
         log_panel = self.create_log_panel()
@@ -590,7 +594,7 @@ class MainWindow(QMainWindow):
         # Tuples of (Text, icon_name)
         button_defs = [
             ("HOME", "home"), ("UPLOAD", "upload"), ("SETUP", "machine_setup"),
-            ("RUN PRINT", "play"), ("DISPLAY", "display")
+            ("RUN PRINT", "play"), ("DISPLAY", "display"), ("METROLOGY", "metrology")
         ]
         
         self.nav_buttons = []
@@ -693,6 +697,10 @@ class MainWindow(QMainWindow):
         # 4. Start the G-code driven timer and sensor monitoring
         self.display_page.start_print_sequence()
 
+    def go_to_metrology_page(self):
+        """Switches to the Metrology page via the sidebar button."""
+        metrology_button = self.nav_buttons[5] # It will be index 5
+        metrology_button.click()
 
     def go_to_advanced_page(self):
         """Switches to the Advanced Controls page."""
