@@ -15,7 +15,7 @@ class SSHWorker(QThread):
     upload_progress = pyqtSignal(int)  # 0-100 for file transfers
     file_uploaded = pyqtSignal(str) # (remote_path) - Emitted upon successful upload
 
-    def __init__(self, host="192.168.0.123", user="jacob", password=""):
+    def __init__(self, host="192.168.0.116", user="jacob", password=""):
         super().__init__()
         self.host = host
         self.user = user

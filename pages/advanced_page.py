@@ -49,8 +49,10 @@ class AdvancedPage(QWidget):
         layout.setSpacing(8)
 
         g4_label = QLabel("G4 Duration:")
-        self.sb_g4_wait = QSpinBox()
+        self.sb_g4_wait = QDoubleSpinBox()
         self.sb_g4_wait.setRange(0.1, 3600.0)
+        self.sb_g4_wait.setDecimals(1)
+        self.sb_g4_wait.setSingleStep(0.1)
         self.sb_g4_wait.setValue(10.0)
         self.sb_g4_wait.setSuffix(" s")
         
