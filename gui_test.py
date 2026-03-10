@@ -66,21 +66,44 @@ except ImportError:
     paramiko = None
 
 
+def _job_plan_defaults():
+    """Defaults for the generated job script so UI + helpers stay in sync."""
+    return {
+        "start_r": 0.0,
+        "start_t": 0.0,
+        "start_z": 0.0,
+        "a_rpm": 9,
+        "warmup_ms": 10000,
+        "include_video": True,
+        "include_metrology_wait": True,
+        "max_layers": 0,
+    }
+
+
 def _default_cfg():
     """Return a baseline configuration dictionary loaded from pipeline helpers when available."""
     if pipeline and hasattr(pipeline, "load_config"):
-        return pipeline.load_config()
-    return {
-        "resolution": 96,
-        "num_angles": 120,
-        "proj_threshold": 0.5,
-        "pixel_size_mm": 0.1,
-        "feedrate": 1200,
-        "laser_power_on": 255,
-        "laser_power_off": 0,
-        "dwell_ms": 2,
-        "ray_type": "parallel",
-    }
+        cfg = pipeline.load_config()
+    else:
+        cfg = {
+            "resolution": 96,
+            "num_angles": 120,
+            "proj_threshold": 0.5,
+            "pixel_size_mm": 0.1,
+            "feedrate": 1200,
+            "laser_power_on": 255,
+            "laser_power_off": 0,
+            "dwell_ms": 2,
+            "ray_type": "parallel",
+        }
+    job_defaults = _job_plan_defaults()
+    job_cfg = cfg.get("job_plan", {})
+    merged_job = job_defaults.copy()
+    if isinstance(job_cfg, dict):
+        merged_job.update({k: job_cfg.get(k, v) for k, v in job_defaults.items()})
+        merged_job.update(job_cfg)
+    cfg["job_plan"] = merged_job
+    return cfg
 
 def _save_cfg(cfg: dict):
     """Persist the configuration dictionary via pipeline helpers if they are present."""
@@ -219,6 +242,7 @@ class SSHCommandWorker(QObject):
                 look_for_keys=False,
             )
             self._emit_log("SSH connection established.")
+            self._sync_critical_sources()
             self._run_remote_command(f"cd {self.remote_dir} && {self.compile_cmd}")
             self._start_master_queue()
             self._running = True
@@ -297,6 +321,17 @@ class SSHCommandWorker(QObject):
             self.file_uploaded.emit(abs_path)
         except Exception as exc:
             self._emit_log(f"[UPLOAD] Failed: {exc}")
+
+    def _sync_critical_sources(self):
+        """Force-upload headers/sources that have been corrupted on the Jetson."""
+        local_root = Path(__file__).resolve().parent
+        for rel in ("HeliCalHelper.h", "HeliCalHelper.cpp"):
+            local_file = local_root / rel
+            if not local_file.exists():
+                continue
+            remote_path = f"{self.remote_dir.rstrip('/')}/{rel}"
+            self._emit_log(f"[SYNC] Ensuring {rel} is up to date on the Jetson ...")
+            self._handle_upload(str(local_file), remote_path)
 
     def _start_master_queue(self):
         """Launch master_queue in interactive mode so subsequent commands run live."""
@@ -379,6 +414,7 @@ class PipelineWorker(QObject):
         self.out_dir = out_dir
         self.cfg = cfg
         self.demo_mode = demo_mode
+        self.job_plan_path = ""
 
     def _emit_log(self, msg):
         """Helper to emit plain pipeline log messages with timestamps."""
@@ -396,18 +432,38 @@ class PipelineWorker(QObject):
             tg = pipeline.voxelize_stl(resolved, self.cfg["resolution"])
             recon_array, sino, recon = pipeline.run_projection(tg, self.cfg["num_angles"], ray_type=self.cfg.get("ray_type", "parallel"))
             spath, rpath = pipeline.save_projection_images(self.out_dir, sino, recon_array)
-            pipeline.save_angle_montage(self.out_dir, sino, n_cols=10)
+            montage_path = pipeline.save_angle_montage(self.out_dir, sino, n_cols=10)
             gpath = pipeline.write_gcode_from_recon_slice(self.out_dir, recon_array, self.cfg)
-            
+
             # Generate video preview
             vpath = pipeline.save_reconstruction_video(self.out_dir, sino)
-            
+
+            job_script_path = ""
+            if hasattr(pipeline, "write_helical_job_script"):
+                assets = {
+                    "stl": resolved,
+                    "sinogram_png": spath,
+                    "recon_png": rpath,
+                    "montage_png": montage_path,
+                    "video": vpath,
+                    "toy_gcode": gpath,
+                }
+                try:
+                    job_script_path = pipeline.write_helical_job_script(self.out_dir, self.cfg, assets, recon_array)
+                except Exception as exc:
+                    self._emit_log(f"[WARN] Failed to write job plan: {exc}")
+                else:
+                    self.job_plan_path = job_script_path
+
             self._emit_log(f"Saved {spath}")
             self._emit_log(f"Saved {rpath}")
-            self._emit_log(f"Saved {os.path.join(self.out_dir, 'angle_montage.png')}")
+            if montage_path:
+                self._emit_log(f"Saved {montage_path}")
             self._emit_log(f"Saved {gpath}")
             if vpath:
                 self._emit_log(f"Saved {vpath}")
+            if job_script_path:
+                self._emit_log(f"Saved {job_script_path}")
             self._emit_log("=== Run done ===")
             self.done.emit(self.out_dir)
         except Exception as e:
@@ -478,6 +534,7 @@ class HeliCALQt(QMainWindow):
         self._worker = None
         self._ssh_thread = None
         self._ssh_worker = None
+        self.last_job_plan_path = ""
 
         QTimer.singleShot(750, self._initiate_connection)
 
@@ -683,6 +740,8 @@ class HeliCALQt(QMainWindow):
         """Create the first tab that lets users pick STL files, tweak parameters, and run the pipeline."""
         tab = QWidget()
         v = QVBoxLayout(tab)
+        cfg_defaults = _default_cfg()
+        job_defaults = cfg_defaults.get("job_plan", {})
 
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("STL File:"))
@@ -719,15 +778,15 @@ class HeliCALQt(QMainWindow):
         v.addLayout(row2)
 
         form = QFormLayout()
-        self.sb_res = QSpinBox(); self.sb_res.setRange(16, 512); self.sb_res.setValue(_default_cfg().get("resolution", 96))
-        self.sb_ang = QSpinBox(); self.sb_ang.setRange(1, 1080); self.sb_ang.setValue(_default_cfg().get("num_angles", 120))
-        self.dsb_thr = QDoubleSpinBox(); self.dsb_thr.setDecimals(3); self.dsb_thr.setRange(0.0, 1.0); self.dsb_thr.setSingleStep(0.01); self.dsb_thr.setValue(_default_cfg().get("proj_threshold", 0.5))
-        self.dsb_px = QDoubleSpinBox(); self.dsb_px.setDecimals(4); self.dsb_px.setRange(0.001, 10.0); self.dsb_px.setValue(_default_cfg().get("pixel_size_mm", 0.1))
-        self.sb_fr = QSpinBox(); self.sb_fr.setRange(1, 200000); self.sb_fr.setValue(_default_cfg().get("feedrate", 1200))
-        self.sb_on = QSpinBox(); self.sb_on.setRange(0, 255); self.sb_on.setValue(_default_cfg().get("laser_power_on", 255))
-        self.sb_off = QSpinBox(); self.sb_off.setRange(0, 255); self.sb_off.setValue(_default_cfg().get("laser_power_off", 0))
-        self.sb_dw = QSpinBox(); self.sb_dw.setRange(0, 10000); self.sb_dw.setValue(_default_cfg().get("dwell_ms", 2))
-        self.cb_ray = QComboBox(); self.cb_ray.addItems(["parallel"]); self.cb_ray.setCurrentText(_default_cfg().get("ray_type", "parallel"))
+        self.sb_res = QSpinBox(); self.sb_res.setRange(16, 512); self.sb_res.setValue(cfg_defaults.get("resolution", 96))
+        self.sb_ang = QSpinBox(); self.sb_ang.setRange(1, 1080); self.sb_ang.setValue(cfg_defaults.get("num_angles", 120))
+        self.dsb_thr = QDoubleSpinBox(); self.dsb_thr.setDecimals(3); self.dsb_thr.setRange(0.0, 1.0); self.dsb_thr.setSingleStep(0.01); self.dsb_thr.setValue(cfg_defaults.get("proj_threshold", 0.5))
+        self.dsb_px = QDoubleSpinBox(); self.dsb_px.setDecimals(4); self.dsb_px.setRange(0.001, 10.0); self.dsb_px.setValue(cfg_defaults.get("pixel_size_mm", 0.1))
+        self.sb_fr = QSpinBox(); self.sb_fr.setRange(1, 200000); self.sb_fr.setValue(cfg_defaults.get("feedrate", 1200))
+        self.sb_on = QSpinBox(); self.sb_on.setRange(0, 255); self.sb_on.setValue(cfg_defaults.get("laser_power_on", 255))
+        self.sb_off = QSpinBox(); self.sb_off.setRange(0, 255); self.sb_off.setValue(cfg_defaults.get("laser_power_off", 0))
+        self.sb_dw = QSpinBox(); self.sb_dw.setRange(0, 10000); self.sb_dw.setValue(cfg_defaults.get("dwell_ms", 2))
+        self.cb_ray = QComboBox(); self.cb_ray.addItems(["parallel"]); self.cb_ray.setCurrentText(cfg_defaults.get("ray_type", "parallel"))
 
         form.addRow("Resolution (vox)", self.sb_res)
         form.addRow("# Angles", self.sb_ang)
@@ -741,6 +800,30 @@ class HeliCALQt(QMainWindow):
         grp = QGroupBox("Pipeline Parameters")
         grp.setLayout(form)
         v.addWidget(grp)
+
+        job_group = QGroupBox("G-code Job Template")
+        job_form = QFormLayout()
+        self.dsb_job_r = QDoubleSpinBox(); self.dsb_job_r.setDecimals(3); self.dsb_job_r.setRange(-1000.0, 1000.0); self.dsb_job_r.setValue(job_defaults.get("start_r", 0.0)); self.dsb_job_r.setSuffix(" mm")
+        self.dsb_job_t = QDoubleSpinBox(); self.dsb_job_t.setDecimals(3); self.dsb_job_t.setRange(-1000.0, 1000.0); self.dsb_job_t.setValue(job_defaults.get("start_t", 0.0)); self.dsb_job_t.setSuffix(" mm")
+        self.dsb_job_z = QDoubleSpinBox(); self.dsb_job_z.setDecimals(3); self.dsb_job_z.setRange(-1000.0, 1000.0); self.dsb_job_z.setValue(job_defaults.get("start_z", 0.0)); self.dsb_job_z.setSuffix(" mm")
+        self.sb_job_rpm = QSpinBox(); self.sb_job_rpm.setRange(0, 5000); self.sb_job_rpm.setValue(int(job_defaults.get("a_rpm", 9)))
+        self.sb_job_warmup = QSpinBox(); self.sb_job_warmup.setRange(0, 600000); self.sb_job_warmup.setSingleStep(500); self.sb_job_warmup.setValue(int(job_defaults.get("warmup_ms", 10000))); self.sb_job_warmup.setSuffix(" ms")
+        self.sb_job_layers = QSpinBox(); self.sb_job_layers.setRange(0, 2048); self.sb_job_layers.setValue(int(job_defaults.get("max_layers", 0)))
+        self.cb_job_video = QCheckBox("Trigger projector video (M200/M202/M203/M201)")
+        self.cb_job_video.setChecked(bool(job_defaults.get("include_video", True)))
+        self.cb_job_metrology = QCheckBox("Include G6 (metrology wait)")
+        self.cb_job_metrology.setChecked(bool(job_defaults.get("include_metrology_wait", True)))
+
+        job_form.addRow("Start R (mm)", self.dsb_job_r)
+        job_form.addRow("Start T (mm)", self.dsb_job_t)
+        job_form.addRow("Start Z (mm)", self.dsb_job_z)
+        job_form.addRow("A-axis RPM", self.sb_job_rpm)
+        job_form.addRow("Warmup dwell (G4)", self.sb_job_warmup)
+        job_form.addRow("Max layers (0 = all)", self.sb_job_layers)
+        job_form.addRow("", self.cb_job_video)
+        job_form.addRow("", self.cb_job_metrology)
+        job_group.setLayout(job_form)
+        v.addWidget(job_group)
 
         row3 = QHBoxLayout()
         self.btn_run = QPushButton("Run Pipeline")
@@ -870,7 +953,7 @@ class HeliCALQt(QMainWindow):
 
     def _cfg_from_ui(self):
         """Convert the GUI widgets into the dictionary structure consumed by the pipeline."""
-        return {
+        cfg = {
             "resolution": int(self.sb_res.value()),
             "num_angles": int(self.sb_ang.value()),
             "proj_threshold": float(self.dsb_thr.value()),
@@ -881,6 +964,17 @@ class HeliCALQt(QMainWindow):
             "dwell_ms": int(self.sb_dw.value()),
             "ray_type": self.cb_ray.currentText(),
         }
+        cfg["job_plan"] = {
+            "start_r": float(self.dsb_job_r.value()),
+            "start_t": float(self.dsb_job_t.value()),
+            "start_z": float(self.dsb_job_z.value()),
+            "a_rpm": int(self.sb_job_rpm.value()),
+            "warmup_ms": int(self.sb_job_warmup.value()),
+            "include_video": bool(self.cb_job_video.isChecked()),
+            "include_metrology_wait": bool(self.cb_job_metrology.isChecked()),
+            "max_layers": int(self.sb_job_layers.value()),
+        }
+        return cfg
 
     def _run_pipeline_clicked(self):
         """Start the worker thread that handles voxelization/projection."""
@@ -914,6 +1008,8 @@ class HeliCALQt(QMainWindow):
 
     def _on_pipeline_done(self, out_dir: str):
         """Celebrate a completed pipeline run with a message box."""
+        if getattr(self, "_worker", None):
+            self.last_job_plan_path = getattr(self._worker, "job_plan_path", "") or ""
         QMessageBox.information(self, "Done", f"Outputs saved to:\n{out_dir}")
 
     def _on_pipeline_failed(self, err: str):
@@ -1074,8 +1170,11 @@ class HeliCALQt(QMainWindow):
         btn_start_seq.clicked.connect(self._send_start_sequence)
         btn_end_seq = QPushButton("Run End Sequence")
         btn_end_seq.clicked.connect(self._send_end_sequence)
+        btn_run_job = QPushButton("Run Job Plan")
+        btn_run_job.clicked.connect(self._send_job_plan)
         seq_layout.addWidget(btn_start_seq)
         seq_layout.addWidget(btn_end_seq)
+        seq_layout.addWidget(btn_run_job)
         seq_group.setLayout(seq_layout)
         layout.addWidget(seq_group)
 
@@ -1299,6 +1398,50 @@ class HeliCALQt(QMainWindow):
         commands = ["G33 A0", "G28", "M18 R T"]
         for cmd in commands:
             self._send_gcode_command(cmd)
+
+    def _send_job_plan(self):
+        """Stream the generated job-plan G-code file to the Jetson."""
+        plan_path = self.last_job_plan_path
+        if not plan_path or not os.path.exists(plan_path):
+            QMessageBox.warning(
+                self,
+                "Job Plan",
+                "No job plan found. Run the pipeline to generate helical_job_plan.gcode first.",
+            )
+            return
+        if not self._ensure_remote_ready():
+            return
+        try:
+            with open(plan_path, "r", encoding="utf-8") as fh:
+                raw_lines = fh.readlines()
+        except Exception as exc:
+            QMessageBox.critical(self, "Job Plan", f"Failed to read {plan_path}:\n{exc}")
+            return
+
+        commands = []
+        for line in raw_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith(";") or stripped.startswith("#"):
+                continue
+            commands.append(stripped)
+        if not commands:
+            QMessageBox.warning(self, "Job Plan", "The job plan file does not contain any executable commands.")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Execute Job Plan",
+            f"Stream {len(commands)} commands from:\n{plan_path}?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        self._append_gcode_log(f"[JOB] Streaming plan: {plan_path}")
+        for cmd in commands:
+            self._send_gcode_command(cmd)
+            QApplication.processEvents()
 
     def _build_axis_command_for_sequence(self):
         """Translate the G0 axis inputs into a single line for the start-sequence macro."""

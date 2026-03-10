@@ -10,7 +10,7 @@ Functions in this module are safe to call from worker threads, tests, or headles
 """
 
 import os
-from typing import Optional
+from typing import Optional, Dict, Any, Iterable
 
 import numpy as np
 import matplotlib
@@ -188,7 +188,7 @@ def save_projection_images(output_dir: str, sino: 'Sinogram', recon_array: np.nd
     return sino_path, recon_path
 
 
-def save_angle_montage(output_dir: str, sino: 'Sinogram', n_cols: int = 10):
+def save_angle_montage(output_dir: str, sino: 'Sinogram', n_cols: int = 10) -> str:
     """Build a tiled PNG that samples the projection angles so demo users see motion."""
     os.makedirs(output_dir, exist_ok=True)
     data = np.asarray(sino.array)
@@ -244,6 +244,7 @@ def save_angle_montage(output_dir: str, sino: 'Sinogram', n_cols: int = 10):
     fig.savefig(out, dpi=200)
     plt.close(fig)
     log(f"Saved {out}")
+    return out
 
 
 def gcode_from_slice(img: np.ndarray, cfg: dict) -> str:
@@ -306,6 +307,211 @@ def write_gcode_from_recon_slice(output_dir: str, recon_array: np.ndarray, cfg: 
         f.write(code)
     log(f"Saved {out_path}")
     return out_path
+
+
+JOB_PLAN_DEFAULTS = {
+    "start_r": 0.0,
+    "start_t": 0.0,
+    "start_z": 0.0,
+    "a_rpm": 9,
+    "warmup_ms": 10000,
+    "include_video": True,
+    "include_metrology_wait": True,
+    "max_layers": None,  # optional cap on layer count
+}
+
+
+def _job_plan_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge UI/job settings with defaults so downstream helpers can rely on keys."""
+    job_cfg = dict(JOB_PLAN_DEFAULTS)
+    incoming = cfg.get("job_plan") if isinstance(cfg, dict) else None
+    if isinstance(incoming, dict):
+        for key, value in incoming.items():
+            if value is None:
+                continue
+            job_cfg[key] = value
+    return job_cfg
+
+
+def _format_start_move(plan: Dict[str, Any]) -> Optional[str]:
+    """Construct the start move G0 line if any axis offsets were provided."""
+    parts = ["G0"]
+    has_value = False
+    for axis, key in (("R", "start_r"), ("T", "start_t"), ("Z", "start_z")):
+        val = plan.get(key)
+        if val is None:
+            continue
+        try:
+            fval = float(val)
+        except (TypeError, ValueError):
+            continue
+        parts.append(f"{axis}{fval:.3f}")
+        has_value = True
+    if not has_value:
+        return None
+    return " ".join(parts)
+
+
+def _layer_indices(total_layers: int, plan: Dict[str, Any]) -> Iterable[int]:
+    """Yield the layer indices we should process, optionally subsampling."""
+    max_layers = plan.get("max_layers")
+    if not max_layers or not isinstance(max_layers, (int, float)) or max_layers >= total_layers:
+        return range(total_layers)
+    max_layers = max(1, int(max_layers))
+    return np.linspace(0, total_layers - 1, max_layers, dtype=int).tolist()
+
+
+def _normalize_slice(sl: np.ndarray) -> np.ndarray:
+    arr = sl.astype(np.float32, copy=True)
+    arr -= arr.min()
+    vmax = arr.max()
+    if vmax > 0:
+        arr /= vmax
+    return arr
+
+
+def _rt_coord(row: int, col: int, rows: int, cols: int, pixel_mm: float) -> tuple[float, float]:
+    """Convert array indices to R/T millimeter units."""
+    r = (row - rows / 2.0) * pixel_mm
+    t = (col - cols / 2.0) * pixel_mm
+    return r, t
+
+
+def build_volume_exposure_commands(recon_array: np.ndarray, cfg: dict, plan: Dict[str, Any]) -> list[str]:
+    """
+    Convert the full reconstruction volume into layer-by-layer R/T toolpaths.
+    Returns a potentially large list of G-code commands.
+    """
+    arr = np.asarray(recon_array)
+    if arr.ndim == 2:
+        arr = arr[:, :, np.newaxis]
+    if arr.ndim != 3:
+        log("[WARN] Unexpected reconstruction shape; skipping volume-derived G-code.")
+        return []
+
+    rows, cols, layers = arr.shape
+    px = float(cfg.get("pixel_size_mm", 0.1))
+    thr = float(cfg.get("proj_threshold", 0.5))
+    dwell = int(cfg.get("dwell_ms", 0))
+    feed = int(cfg.get("feedrate", 1000))
+    p_on = int(cfg.get("laser_power_on", 255))
+    p_off = int(cfg.get("laser_power_off", 0))
+
+    commands: list[str] = []
+    commands.append("G90 ; absolute positioning")
+    commands.append(f"F{feed}")
+
+    printable_found = False
+    for layer_idx in _layer_indices(layers, plan):
+        sl = _normalize_slice(arr[:, :, layer_idx])
+        mask = sl >= thr
+        if not mask.any():
+            continue
+        printable_found = True
+        z_mm = (layer_idx - layers / 2.0) * px
+        commands.append(f"; Layer {layer_idx + 1} / {layers} (Z={z_mm:.3f} mm)")
+        commands.append(f"G0 Z{z_mm:.3f}")
+
+        for row in range(rows):
+            if not mask[row].any():
+                continue
+            row_r, _ = _rt_coord(row, 0, rows, cols, px)
+            col_sequence = list(range(cols)) if row % 2 == 0 else list(range(cols - 1, -1, -1))
+            start_col = col_sequence[0]
+            _, start_t = _rt_coord(row, start_col, rows, cols, px)
+            commands.append(f"G0 R{row_r:.3f} T{start_t:.3f}")
+            last_on = False
+            for col in col_sequence:
+                _, t_mm = _rt_coord(row, col, rows, cols, px)
+                val = sl[row, col]
+                want_on = val >= thr
+                if want_on != last_on:
+                    pwm = p_on if want_on else p_off
+                    commands.append(f"M3 S{pwm}")
+                    last_on = want_on
+                commands.append(f"G1 R{row_r:.3f} T{t_mm:.3f}")
+                if want_on and dwell > 0:
+                    commands.append(f"G4 P{dwell}")
+            if last_on:
+                commands.append("M3 S0")
+        commands.append("M5")
+
+    if not printable_found:
+        return []
+    return commands
+
+
+def write_helical_job_script(output_dir: str, cfg: dict, asset_info: Dict[str, Optional[str]], recon_array: np.ndarray) -> str:
+    """
+    Create a real job script that sequences start/end macros and embeds per-layer R/T toolpaths.
+    Returns the path to the saved .gcode plan.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    plan = _job_plan_config(cfg or {})
+    lines = [
+        ";; ------------------------------------------------------------",
+        ";; HeliCAL Control Station Job Script",
+        ";; Generated automatically from gui_test.py pipeline.",
+        f";; STL Source: {asset_info.get('stl') or 'n/a'}",
+    ]
+    if asset_info.get("video"):
+        lines.append(f";; Video Asset: {asset_info['video']}")
+    if asset_info.get("sinogram_png"):
+        lines.append(f";; Sinogram Preview: {asset_info['sinogram_png']}")
+    if asset_info.get("recon_png"):
+        lines.append(f";; Reconstruction Slice: {asset_info['recon_png']}")
+    if asset_info.get("montage_png"):
+        lines.append(f";; Angle Montage: {asset_info['montage_png']}")
+    if asset_info.get("toy_gcode"):
+        lines.append(f";; Legacy Toy G-code: {asset_info['toy_gcode']}")
+    lines += [
+        ";; ------------------------------------------------------------",
+        "M17 ; Motors ON",
+        "G28 ; Home R/T/Z",
+    ]
+
+    start_move = _format_start_move(plan)
+    if start_move:
+        lines.append(f"{start_move} ; Move to job zero")
+    lines.append("G92 ; Zero axes")
+    lines.append(f"G33 A{int(plan['a_rpm'])} ; Spin-up rotation")
+    lines.append("G5 ; Wait for RPM steady-state")
+    warmup = int(plan.get("warmup_ms", 0))
+    if warmup > 0:
+        lines.append(f"G4 P{warmup} ; Warm-up dwell before exposure")
+
+    exposure_cmds = build_volume_exposure_commands(recon_array, cfg, plan)
+    if exposure_cmds:
+        if plan.get("include_video"):
+            lines.append("M200 ; Projector ON / configure")
+            lines.append("M202 ; Play projector feed")
+        lines.append(";; --- Volume Exposure Sequence ---")
+        lines.extend(exposure_cmds)
+        if plan.get("include_video"):
+            lines.append("M203 ; Pause / stop projector video")
+            lines.append("M201 ; Projector OFF")
+    else:
+        lines.append(";; [WARN] No printable voxels detected; skipping exposure raster.")
+
+    if plan.get("include_metrology_wait", True):
+        lines.append("G6 ; Wait for metrology completion")
+
+    lines += [
+        "",
+        ";; --- End Sequence ---",
+        "G33 A0 ; Stop rotation",
+        "G28 ; Re-home before shutdown",
+        "M18 R T Z ; Disable motors",
+        ";; ------------------------------------------------------------",
+        ";; End of job script",
+        ";; ------------------------------------------------------------",
+    ]
+
+    path = os.path.join(output_dir, "helical_job_plan.gcode")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    log(f"Saved {path}")
+    return path
 
 
 def save_reconstruction_video(output_dir: str, sino: 'Sinogram') -> str:
