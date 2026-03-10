@@ -23,10 +23,19 @@
 #include <atomic>
 #include <functional>
 #include <termios.h>   // tcflush
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <cstdlib>
 
 using namespace std;
 
 // ====== Tunables / constants ======
+static const std::string CURRENT_JOB_VIDEO =
+    "/home/jacob/Desktop/HeliCAL_Final/current_job_video.mp4";
+
+static std::atomic<pid_t> g_video_pid{-1};
+
 static constexpr int32_t COUNTS_PER_THETA_REV = 245426;   // pulses per revolution (theta encoder)
 static inline int32_t rpm_to_pps(double rpm) {
     return static_cast<int32_t>((rpm * COUNTS_PER_THETA_REV) / 60.0);
@@ -183,6 +192,77 @@ static TicController* rep_ctrl_for(char axis,
     }
 }
 
+static void stop_projector_video()
+{
+    pid_t pid = g_video_pid.load();
+    if (pid > 0) {
+        kill(pid, SIGTERM);
+        waitpid(pid, nullptr, 0);
+        g_video_pid.store(-1);
+    }
+
+    // Best-effort cleanup in case mpv was launched outside this process
+    system("pkill -f \"mpv --title=ProjectorVideo\" >/dev/null 2>&1");
+}
+
+static void launch_projector_video_or_throw(const std::string& video_path)
+{
+    // Stop any previous video player first
+    stop_projector_video();
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        throw std::runtime_error("Failed to fork mpv process");
+    }
+
+    if (pid == 0) {
+        execlp("mpv",
+               "mpv",
+               "--title=ProjectorVideo",
+               "--pause",
+               "--no-border",
+               "--loop=inf",
+               "--video-rotate=180",
+               video_path.c_str(),
+               (char*)nullptr);
+
+        _exit(127); // only reached if execlp fails
+    }
+
+    g_video_pid.store(pid);
+}
+
+static void ensure_x11_env()
+{
+    // Most common local desktop X display on Jetson/Ubuntu
+    if (!getenv("DISPLAY")) {
+        setenv("DISPLAY", ":0", 1);
+    }
+
+    // Typical Xauthority file for the logged-in desktop user
+    if (!getenv("XAUTHORITY")) {
+        setenv("XAUTHORITY", "/home/jacob/.Xauthority", 1);
+    }
+}
+
+static void position_projector_video_window()
+{
+
+    ensure_x11_env();
+    // Give mpv time to create its window
+    sleep(2);
+
+    system("xdotool search --name ProjectorVideo windowmove 1920 0");
+    system("xdotool search --name ProjectorVideo windowsize 2560 1600");
+    system("xdotool search --name ProjectorVideo windowactivate --sync key f");
+}
+
+static void ensure_display_env()
+{
+    setenv("DISPLAY", ":0", 1);
+    setenv("XAUTHORITY", "/home/jacob/.Xauthority", 1);
+}
+
 int main() {
     // ===================== TERMINAL RESTORE FIX =====================
     // Restore terminal ONLY ONCE, and ONLY at the very end (after threads are joined).
@@ -255,6 +335,8 @@ int main() {
     led.configure();
     led.current(450);
     dlp.configure();
+
+    ensure_display_env();
 
     // ===== 3) Interpreter state =====
     bool absolute_mode = true;             // G90 (default)
@@ -403,11 +485,13 @@ int main() {
         AX_T.haltAndHold();
         AX_Z.haltAndHold();
         motors_disable(std::vector<char>{'R','T','Z'});
+        stop_projector_video();
     };
 
     // ===================== IMPORTANT CHANGE =====================
     // perform_shutdown() no longer touches terminal settings.
     auto perform_shutdown = [&](bool /*restore_term_ignored*/) {
+        stop_projector_video();
         dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
         led.stop();
         shutting_down = true;
@@ -487,6 +571,7 @@ int main() {
             try { m->deenergize(); } catch (...) {}
         }
 
+        stop_projector_video();
         dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
         led.stop();
 
@@ -524,11 +609,45 @@ int main() {
             case 900:
                 safe_shutdown_m900();
                 return true;
-            case 200:
-                led.configure(); led.current(450); dlp.configure();
-                cout << "M200: Projector ON (configured).\n";
+            case 200: {
+                cout << "DISPLAY=" << (getenv("DISPLAY") ? getenv("DISPLAY") : "(null)") << "\n";
+                cout << "XAUTHORITY=" << (getenv("XAUTHORITY") ? getenv("XAUTHORITY") : "(null)") << "\n";
+                cout << "UID=" << getuid() << " EUID=" << geteuid() << "\n";
+                ensure_display_env();
+
+                led.configure();
+                led.current(450);
+                dlp.configure();
+
+                cout << "Waiting 1s before playing video...\n";
+                sleep(1);
+
+                system("export DISPLAY=:0");
+                system("export XAUTHORITY=/home/jacob/.Xauthority");
+
+
+                system("mpv --title=ProjectorVideo --pause --no-border --loop=inf --video-rotate=180 /home/jacob/Desktop/HeliCAL_Final/current_job_video.mp4 &");
+
+                sleep(2);
+
+                system("xdotool search --name ProjectorVideo windowmove 1920 0");
+                system("xdotool search --name ProjectorVideo windowsize 2560 1600");
+                system("xdotool search --name ProjectorVideo windowactivate --sync key f");
+
+                // cout << "Press [SPACE] to EMERGENCY STOP, or [ENTER] to play video\n";
+                // while (true) {
+                //     if (abort_requested()) throw runtime_error("EMERGENCY STOP");
+                //     if (consume_enter()) break;
+                //     this_thread::sleep_for(10ms);
+                // }
+
+                system("xdotool search --name ProjectorVideo windowactivate --sync key space");
+
+                cout << "M200: Projector ON and current_job_video.mp4 loaded.\n";
                 return true;
+            }
             case 201:
+                stop_projector_video();
                 dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
                 led.stop();
                 cout << "M201: Projector OFF.\n";
@@ -983,6 +1102,7 @@ int main() {
 
     // ===== Cleanup =====
     cout << "Shutting down...\n";
+    stop_projector_video();
     uart.setThetaVelocity(0);
     dlp.setVideoSource(DLPC900_IT6535MODE_POWERDOWN);
     led.stop();

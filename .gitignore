@@ -40,3 +40,4 @@ coverage.xml
 
 # Generated outputs from the control station
 outputs/
+.vscode/settings.json
