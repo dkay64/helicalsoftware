@@ -464,13 +464,24 @@ class RunPage(QWidget):
         power = self.main_window.job_data.get('power', 0)
         feed_rate = self.main_window.job_data.get('feed_rate', 100) # Default feed rate
         video_path = self.main_window.job_data.get('video_path')
+        remote_video_path = self.main_window.job_data.get('remote_video_path')
 
         if not video_path:
             self.log_message.emit("Critical Error: Video path not found in job data.", "ERROR")
             QMessageBox.critical(self, "Job Error", "Cannot start job: The video path is missing. Please go back to the upload step.")
             return
             
+        if not remote_video_path:
+            self.log_message.emit("Critical Error: Remote video path missing (upload not complete).", "ERROR")
+            QMessageBox.critical(
+                self,
+                "Job Error",
+                "Cannot start job: The video has not finished uploading to the Jetson."
+            )
+            return
+
         self.log_message.emit(f"Video path found: {video_path}", "INFO")
+        self.log_message.emit(f"Remote video path found: {remote_video_path}", "INFO")
 
         self.log_message.emit("--- FINAL JOB START SEQUENCE ---", "SUCCESS")
         
@@ -479,7 +490,7 @@ class RunPage(QWidget):
         self.main_window.send_command(f"F{feed_rate}")   # Set Feed Rate
 
         # 2. Start Remote Video Playback
-        self.main_window.start_remote_video(video_path)
+        self.main_window.start_remote_video(remote_video_path)
 
         # 3. Send Start Trigger (Projector)
         self.main_window.send_command('M202')

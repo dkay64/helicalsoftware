@@ -478,7 +478,7 @@ class HeliCALQt(QMainWindow):
         self.setWindowTitle("HeliCAL Control Station")
         self.resize(980, 720)
 
-        self.ssh_host = "192.168.0.123"
+        self.ssh_host = "192.168.0.116"
         self.ssh_user = "jacob"
         self.remote_dir = "Desktop/HeliCAL_Final"
         self.wifi_name = "AirBears9000"

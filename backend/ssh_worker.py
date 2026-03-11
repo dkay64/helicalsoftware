@@ -177,14 +177,50 @@ class SSHWorker(QThread):
         """Queues the command sequence to play a video on the remote machine."""
         self._log("Queueing remote video playback sequence.", "INFO")
         safe_remote_path = shlex.quote(remote_path)
-        
+
+        # Pick the non-primary monitor if available (typically the projector).
+        # Fallback to primary monitor when only one display is present.
+        target_geom_cmd = (
+            'TARGET_GEOM=$(DISPLAY=:0 xrandr --listmonitors | '
+            "awk 'NR>1 && $0 !~ /\\*/ {print $3; exit}'); "
+            'if [ -z "$TARGET_GEOM" ]; then '
+            'TARGET_GEOM=$(DISPLAY=:0 xrandr --listmonitors | awk \'NR==2 {print $3}\'); '
+            'fi; '
+            'echo "$TARGET_GEOM"'
+        )
+
+        position_cmd = (
+            'TARGET_GEOM=$('
+            'DISPLAY=:0 xrandr --listmonitors | '
+            "awk 'NR>1 && $0 !~ /\\*/ {print $3; exit}'); "
+            'if [ -z "$TARGET_GEOM" ]; then '
+            'TARGET_GEOM=$(DISPLAY=:0 xrandr --listmonitors | awk \'NR==2 {print $3}\'); '
+            'fi; '
+            'if [ -z "$TARGET_GEOM" ]; then exit 0; fi; '
+            'W=$(echo "$TARGET_GEOM" | awk -F\'[x+/]\' \'{print $1}\'); '
+            'H=$(echo "$TARGET_GEOM" | awk -F\'[x+/]\' \'{print $3}\'); '
+            'X=$(echo "$TARGET_GEOM" | awk -F\'[x+/]\' \'{print $5}\'); '
+            'Y=$(echo "$TARGET_GEOM" | awk -F\'[x+/]\' \'{print $6}\'); '
+            'i=0; '
+            'while [ $i -lt 10 ]; do '
+            'WIN_ID=$(DISPLAY=:0 xdotool search --name ProjectorVideo 2>/dev/null | head -n 1); '
+            'if [ -n "$WIN_ID" ]; then '
+            'DISPLAY=:0 xdotool windowmove "$WIN_ID" "$X" "$Y"; '
+            'DISPLAY=:0 xdotool windowsize "$WIN_ID" "$W" "$H"; '
+            'DISPLAY=:0 xdotool windowactivate --sync "$WIN_ID" key space; '
+            'exit 0; '
+            'fi; '
+            'i=$((i+1)); '
+            'sleep 0.3; '
+            'done'
+        )
+
         commands = [
             'if DISPLAY=:0 xset q >/dev/null 2>&1; then echo "Display OK"; else echo "Display not ready"; fi',
+            target_geom_cmd,
             'pkill mpv >/dev/null 2>&1 || true',
             f'DISPLAY=:0 nohup mpv --fullscreen --loop=inf --video-rotate=180 --title=ProjectorVideo {safe_remote_path} >/dev/null 2>&1 &',
-            'sleep 1 && DISPLAY=:0 xdotool search --name ProjectorVideo windowmove 1920 0',
-            'DISPLAY=:0 xdotool search --name ProjectorVideo windowsize 2560 1600',
-            'DISPLAY=:0 xdotool search --name ProjectorVideo windowactivate --sync key space'
+            position_cmd
         ]
         for cmd in commands:
             self.send_shell(cmd)
