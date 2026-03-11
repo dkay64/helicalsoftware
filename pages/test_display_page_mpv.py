@@ -315,7 +315,7 @@ class DisplayPage(QWidget):
         
         cw_labels = {"cw_r": "R-Axis", "cw_t": "T-Axis", "cw_z": "Z-Axis"}
         rot_labels = {"rpm": "Speed (RPM)"}
-        imu_labels = {"imu_ax": "Accel X", "imu_ay": "Accel Y", "imu_az": "Accel Z"}
+        imu_labels = {"imu_ax": "Accel R", "imu_ay": "Accel T", "imu_az": "Accel Z"}
 
         self.cw_card = SensorCard("Counterweight", "assets/icons/move-left.svg", ["cw_r", "cw_t", "cw_z"], cw_labels, self.log_message)
         self.tw_card = SensorCard("Twowave", "assets/icons/move-left.svg", ["cw_r", "cw_t", "tw_z"], cw_labels, self.log_message)

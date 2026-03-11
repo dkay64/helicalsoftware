@@ -197,7 +197,7 @@ class AdvancedPage(QWidget):
         zero_hbox = QHBoxLayout()
         zero_hbox.addWidget(QLabel("G92 Axis:"))
         self.g92_axis_combo = QComboBox()
-        self.g92_axis_combo.addItems(["R", "T", "Z", "X", "Y", "A"])
+        self.g92_axis_combo.addItems(["R", "T", "Z", "A"])
         self.g92_axis_combo.setStyleSheet("QComboBox QAbstractItemView { background-color: #27272a; border: 1px solid #3f3f46; selection-background-color: #2563eb; color: #e4e4e7; }")
         zero_hbox.addWidget(self.g92_axis_combo)
         btn_zero = QPushButton("G92 Zero Axis")

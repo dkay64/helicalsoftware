@@ -10,7 +10,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 # --- Custom Dialog for Homing Values ---
 class CustomHomingDialog(QDialog):
     """
-    A custom dialog for entering specific X, Y, Z, T coordinates.
+    A custom dialog for entering specific R, T, Z, A coordinates.
     Styled to match the main application's dark theme.
     """
     def __init__(self, parent=None):
@@ -23,10 +23,10 @@ class CustomHomingDialog(QDialog):
         form_layout.setSpacing(15)
 
         self.inputs = {
-            'X': QDoubleSpinBox(),
-            'Y': QDoubleSpinBox(),
-            'Z': QDoubleSpinBox(),
+            'R': QDoubleSpinBox(),
             'T': QDoubleSpinBox(),
+            'Z': QDoubleSpinBox(),
+            'A': QDoubleSpinBox(),
         }
 
         for axis, spinbox in self.inputs.items():
@@ -177,7 +177,7 @@ class SetupPage(QWidget):
         controls_layout.addWidget(home_all_button)
 
         axis_grid = QGridLayout()
-        axes = ['X', 'Y', 'Z', 'T']
+        axes = ['R', 'T', 'Z', 'A']
         for i, axis in enumerate(axes):
             button = QPushButton(f"Home {axis}")
             button.setObjectName("SecondaryButton")

@@ -40,3 +40,9 @@ coverage.xml
 
 # Generated outputs from the control station
 outputs/
+
+
+# Olivia workflow
+GEMINI.md
+working_requirements.txt
+GUI.pdf
