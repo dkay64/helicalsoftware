@@ -6,7 +6,8 @@ from PyQt5.QtWidgets import (
     QToolButton, QMessageBox, QInputDialog, QLineEdit, QFileDialog
 )
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt, QSize, QDateTime, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, QDateTime, pyqtSignal, QThread
+
 
 from backend.ssh_worker import SSHWorker
 from pages.upload_page import UploadPage
@@ -15,6 +16,7 @@ from pages.run_page import RunPage
 from pages.display_page import DisplayPage
 from pages.advanced_page import AdvancedPage
 from components.jog_dialog import JogDialog
+from pages.metrology_page import MetrologyPage
 
 def load_stylesheet(app):
     """Loads the global QSS stylesheet for the application."""
@@ -191,6 +193,46 @@ class PlaceholderPage(QWidget):
         label.setObjectName("Page_Title")
         layout.addWidget(label)
 
+class GCodeStreamer(QThread):
+    """
+    A QThread that reads a G-code file and streams it line-by-line
+    to the SSH worker.
+    """
+    finished = pyqtSignal()
+    log_message = pyqtSignal(str, str)
+
+    def __init__(self, file_path, ssh_worker, parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.ssh_worker = ssh_worker
+        self._is_running = True
+
+    def run(self):
+        self.log_message.emit(f"Starting G-code stream from: {os.path.basename(self.file_path)}", "INFO")
+        try:
+            with open(self.file_path, 'r') as f:
+                for line in f:
+                    if not self._is_running:
+                        self.log_message.emit("G-code stream cancelled by user.", "WARNING")
+                        break
+                    
+                    line = line.strip()
+                    if line and not line.startswith(';'):
+                        self.ssh_worker.send_gcode(line)
+                        self.msleep(50) 
+            
+            if self._is_running:
+                self.log_message.emit("G-code stream finished.", "SUCCESS")
+
+        except Exception as e:
+            self.log_message.emit(f"Error during G-code streaming: {e}", "ERROR")
+        
+        self.finished.emit()
+
+    def stop(self):
+        self._is_running = False
+
+
 # --- Main Application Window --- 
 class MainWindow(QMainWindow):
     upload_complete = pyqtSignal()
@@ -203,6 +245,7 @@ class MainWindow(QMainWindow):
 
         # Early initialization of output_log to prevent race condition during startup
         self.output_log = QTextEdit()
+        self.gcode_streamer = None
 
         self.job_data = {}
         self.is_connected = False
@@ -234,6 +277,7 @@ class MainWindow(QMainWindow):
         self.setup_page = SetupPage(main_window=self)
         self.run_page = RunPage(main_window=self)
         self.display_page = DisplayPage(main_window=self)
+        self.metrology_page = MetrologyPage(main_window=self)
         self.advanced_page = AdvancedPage(main_window=self)
         
         # --- Page Connections ---
@@ -247,6 +291,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.setup_page)
         self.stacked_widget.addWidget(self.run_page)
         self.stacked_widget.addWidget(self.display_page)
+        self.stacked_widget.addWidget(self.metrology_page)
         self.stacked_widget.addWidget(self.advanced_page)
 
         # Connect log signals
@@ -254,6 +299,7 @@ class MainWindow(QMainWindow):
         self.setup_page.log_message.connect(self.append_log)
         self.run_page.log_message.connect(self.append_log)
         self.display_page.log_message.connect(self.append_log)
+        self.metrology_page.log_message.connect(self.append_log)
         self.advanced_page.log_message.connect(self.append_log)
         
         log_panel = self.create_log_panel()
@@ -354,6 +400,28 @@ class MainWindow(QMainWindow):
 
         self.append_log(f"Requesting remote video playback for: {path}", "INFO")
         self.ssh_worker.play_remote_video(path)
+
+
+    def start_gcode_streaming(self, file_path):
+        """Initializes and starts the GCodeStreamer thread."""
+        if not self.is_connected:
+            self.append_log("Cannot stream G-code, not connected.", "ERROR")
+            return
+
+        if self.gcode_streamer and self.gcode_streamer.isRunning():
+            self.append_log("A G-code stream is already in progress.", "WARNING")
+            return
+
+        self.gcode_streamer = GCodeStreamer(file_path, self.ssh_worker)
+        self.gcode_streamer.log_message.connect(self.append_log)
+        self.gcode_streamer.finished.connect(self.on_gcode_stream_finished)
+        self.gcode_streamer.start()
+
+    def on_gcode_stream_finished(self):
+        """Cleans up after the G-code streamer is done."""
+        self.append_log("G-code streaming thread has finished.", "INFO")
+        self.gcode_streamer = None
+
 
     def upload_video_for_playback(self):
         """Opens a dialog to upload a video for immediate remote playback."""
@@ -590,7 +658,7 @@ class MainWindow(QMainWindow):
         # Tuples of (Text, icon_name)
         button_defs = [
             ("HOME", "home"), ("UPLOAD", "upload"), ("SETUP", "machine_setup"),
-            ("RUN PRINT", "play"), ("DISPLAY", "display")
+            ("RUN PRINT", "play"), ("DISPLAY", "display"), ("METROLOGY", "metrology")
         ]
         
         self.nav_buttons = []
@@ -693,6 +761,10 @@ class MainWindow(QMainWindow):
         # 4. Start the G-code driven timer and sensor monitoring
         self.display_page.start_print_sequence()
 
+    def go_to_metrology_page(self):
+        """Switches to the Metrology page via the sidebar button."""
+        metrology_button = self.nav_buttons[5] # It will be index 5
+        metrology_button.click()
 
     def go_to_advanced_page(self):
         """Switches to the Advanced Controls page."""

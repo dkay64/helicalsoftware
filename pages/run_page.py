@@ -333,6 +333,9 @@ class RunPage(QWidget):
         
         self.video_file_label = QLabel("Video File: <span style='color:white;'>N/A</span>")
         self.video_file_label.setObjectName("SummaryLabel")
+
+        self.gcode_file_label = QLabel("G-Code File: <span style='color:white;'>N/A</span>")
+        self.gcode_file_label.setObjectName("SummaryLabel")
         
         self.rpm_label = QLabel("Spindle RPM: <span style='color:white;'>N/A</span>")
         self.rpm_label.setObjectName("SummaryLabel")
@@ -350,6 +353,7 @@ class RunPage(QWidget):
         time_label.setObjectName("SummaryLabel")
         
         data_layout.addWidget(self.video_file_label)
+        data_layout.addWidget(self.gcode_file_label)
         data_layout.addWidget(self.rpm_label)
         data_layout.addWidget(self.power_label)
         data_layout.addWidget(self.feed_rate_label)
@@ -458,18 +462,29 @@ class RunPage(QWidget):
             self.log_message.emit("Safety Halt: Rotation not active. Print aborted.", "ERROR")
             QMessageBox.critical(self, "Safety Halt", "Rotation is not active. Please start rotation before running the job.")
             return
-        
-        self.log_message.emit("Rotation check passed.", "INFO")
-
+        # --- Retrieve all necessary data from job_data ---
         power = self.main_window.job_data.get('power', 0)
+<<<<<<< HEAD
         feed_rate = self.main_window.job_data.get('feed_rate', 100) # Default feed rate
         video_path = self.main_window.job_data.get('video_path')
         remote_video_path = self.main_window.job_data.get('remote_video_path')
+=======
+        feed_rate = self.main_window.job_data.get('feed_rate', 100)
+        video_path = self.main_window.job_data.get('remote_video_path') # Use remote path
+        gcode_path = self.main_window.job_data.get('gcode_path')
+>>>>>>> ce090d4be2b8ce082eefd94cc776e422634ab471
 
+        # --- Validate data ---
         if not video_path:
-            self.log_message.emit("Critical Error: Video path not found in job data.", "ERROR")
-            QMessageBox.critical(self, "Job Error", "Cannot start job: The video path is missing. Please go back to the upload step.")
+            self.log_message.emit("Critical Error: Remote video path not found in job data.", "ERROR")
+            QMessageBox.critical(self, "Job Error", "Cannot start job: The remote video path is missing.")
             return
+
+        if not gcode_path:
+            self.log_message.emit("Critical Error: G-code path not found in job data.", "ERROR")
+            QMessageBox.critical(self, "Job Error", "Cannot start job: The G-code path is missing. Please go back to the upload step.")
+            return
+<<<<<<< HEAD
             
         if not remote_video_path:
             self.log_message.emit("Critical Error: Remote video path missing (upload not complete).", "ERROR")
@@ -482,6 +497,8 @@ class RunPage(QWidget):
 
         self.log_message.emit(f"Video path found: {video_path}", "INFO")
         self.log_message.emit(f"Remote video path found: {remote_video_path}", "INFO")
+=======
+>>>>>>> ce090d4be2b8ce082eefd94cc776e422634ab471
 
         self.log_message.emit("--- FINAL JOB START SEQUENCE ---", "SUCCESS")
         
@@ -489,15 +506,23 @@ class RunPage(QWidget):
         self.main_window.send_command("M200") # Projector On
         self.main_window.send_command(f"F{feed_rate}")   # Set Feed Rate
 
+<<<<<<< HEAD
         # 2. Start Remote Video Playback
         self.main_window.start_remote_video(remote_video_path)
+=======
+        # 2. Start Remote Video Playback using the remote path
+        self.main_window.start_remote_video(video_path)
+>>>>>>> ce090d4be2b8ce082eefd94cc776e422634ab471
 
         # 3. Send Start Trigger (Projector)
         self.main_window.send_command('M202')
+
+        # 4. Start streaming the G-code file
+        self.main_window.start_gcode_streaming(gcode_path)
         
-        # 4. Transition to Display Page (the signal will do this)
+        # 5. Transition to Display Page (the signal will do this)
         self.log_message.emit("Emitting runJobStarted signal.", "INFO")
-        self.runJobStarted.emit()
+        self.runJobStarted.emit()        
         
 
 
