@@ -7,7 +7,7 @@ RTSP_URL = "rtsp://192.168.0.102:8554/cam?tcp_timeout=5000000"
 cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
 # --- CONFIGURATION ---
 # Use the NEW IP address of your Jetson here
-JETSON_IP = "192.168.0.102" 
+JETSON_IP = "192.168.0.116" 
 RTSP_URL = f"rtsp://{JETSON_IP}:8554/cam"
 
 # The center of your 720x1280 vertical feed
