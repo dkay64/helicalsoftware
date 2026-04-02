@@ -464,15 +464,9 @@ class RunPage(QWidget):
             return
         # --- Retrieve all necessary data from job_data ---
         power = self.main_window.job_data.get('power', 0)
-<<<<<<< HEAD
-        feed_rate = self.main_window.job_data.get('feed_rate', 100) # Default feed rate
-        video_path = self.main_window.job_data.get('video_path')
-        remote_video_path = self.main_window.job_data.get('remote_video_path')
-=======
         feed_rate = self.main_window.job_data.get('feed_rate', 100)
         video_path = self.main_window.job_data.get('remote_video_path') # Use remote path
         gcode_path = self.main_window.job_data.get('gcode_path')
->>>>>>> ce090d4be2b8ce082eefd94cc776e422634ab471
 
         # --- Validate data ---
         if not video_path:
@@ -484,21 +478,6 @@ class RunPage(QWidget):
             self.log_message.emit("Critical Error: G-code path not found in job data.", "ERROR")
             QMessageBox.critical(self, "Job Error", "Cannot start job: The G-code path is missing. Please go back to the upload step.")
             return
-<<<<<<< HEAD
-            
-        if not remote_video_path:
-            self.log_message.emit("Critical Error: Remote video path missing (upload not complete).", "ERROR")
-            QMessageBox.critical(
-                self,
-                "Job Error",
-                "Cannot start job: The video has not finished uploading to the Jetson."
-            )
-            return
-
-        self.log_message.emit(f"Video path found: {video_path}", "INFO")
-        self.log_message.emit(f"Remote video path found: {remote_video_path}", "INFO")
-=======
->>>>>>> ce090d4be2b8ce082eefd94cc776e422634ab471
 
         self.log_message.emit("--- FINAL JOB START SEQUENCE ---", "SUCCESS")
         
@@ -506,13 +485,8 @@ class RunPage(QWidget):
         self.main_window.send_command("M200") # Projector On
         self.main_window.send_command(f"F{feed_rate}")   # Set Feed Rate
 
-<<<<<<< HEAD
-        # 2. Start Remote Video Playback
-        self.main_window.start_remote_video(remote_video_path)
-=======
         # 2. Start Remote Video Playback using the remote path
         self.main_window.start_remote_video(video_path)
->>>>>>> ce090d4be2b8ce082eefd94cc776e422634ab471
 
         # 3. Send Start Trigger (Projector)
         self.main_window.send_command('M202')
