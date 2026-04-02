@@ -247,7 +247,6 @@ class SensorWorker(QThread):
                 'cw_r': 0.0, 'cw_t': 0.0, 'cw_z': 0.0,
                 'tw_r': 0.0, 'tw_t': 0.0, 'tw_z': 0.0,
                 'rpm': 0.0,
-                'angle': 0.0,
                 'imu_ax': 0.0, 'imu_ay': 0.0, 'imu_az': 0.0,
             }
             self.data_updated.emit(data)
@@ -388,12 +387,12 @@ class DisplayPage(QWidget):
         cards_layout.setSpacing(20)
         
         cw_labels = {"cw_r": "R-Axis", "cw_t": "T-Axis", "cw_z": "Z-Axis"}
-        rot_labels = {"rpm": "Speed (RPM)", "angle": "Angle (°)"}
-        imu_labels = {"imu_ax": "Accel R", "imu_ay": "Accel T", "imu_az": "Accel Z"}
+        rot_labels = {"rpm": "Speed (RPM)"}
+        imu_labels = {"imu_ax": "Accel X", "imu_ay": "Accel Y", "imu_az": "Accel Z"}
 
         self.cw_card = SensorCard("Counterweight", "assets/icons/move-left.svg", ["cw_r", "cw_t", "cw_z"], cw_labels, self.log_message)
         self.tw_card = SensorCard("Twowave", "assets/icons/move-left.svg", ["cw_r", "cw_t", "tw_z"], cw_labels, self.log_message)
-        self.rot_card = SensorCard("Rotating Stage", "assets/icons/repeat.svg", ["rpm", "angle", None], rot_labels, self.log_message)
+        self.rot_card = SensorCard("Rotating Stage", "assets/icons/repeat.svg", ["rpm", None, None], rot_labels, self.log_message)
         self.imu_card = SensorCard("IMU", "assets/icons/monitor.svg", ["imu_ax", "imu_ay", "imu_az"], imu_labels, self.log_message)
         
         cards_layout.addWidget(self.cw_card, 0, 0)
@@ -569,11 +568,10 @@ class DisplayPage(QWidget):
         self.main_window.send_command("M112")
 
     def start_cv_feed(self):
-        self.jetson = JetsonController("~/Desktop/start_camera_stream.sh")
-        self.jetson.start() 
-        
-        self.log_message.emit("Waking up Jetson camera...", "INFO")
-        QTimer.singleShot(1000, self.connect_opencv_stream)
+        # self.jetson = JetsonController("start_camera_stream.sh")
+        # self.jetson.start() 
+        # self.log_message.emit("Waking up Jetson camera...", "INFO")
+        self.connect_opencv_stream()
 
     def connect_opencv_stream(self):
         # Now self.camera_view will exist!
