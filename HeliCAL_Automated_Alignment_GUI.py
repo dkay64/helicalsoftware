@@ -68,7 +68,7 @@ CALIBRATION_STEPS = [
         "mode": "Automated Sweep",
         "goal": (
             "Project 15x15 px square and scan R across 184.0–188.0 mm in 0.05 mm steps. "
-            "Accept first/best position meeting 'close-enough' sharpness threshold."
+            "Accept best position meeting 'close-enough' sharpness threshold."
         ),
         "tolerance": "R in [184.0, 188.0] mm & Normalized Clarity >= Threshold"
     },
@@ -78,7 +78,7 @@ CALIBRATION_STEPS = [
         "mode": "Manual Physical Adjustment",
         "goal": (
             "Project top and bottom squares. Physically adjust projector tilt/rotation "
-            "while watching live top vs. bottom ROI clarity scores until balanced."
+            "while comparing Initial (left) vs. Current (right) top/bottom ROI clarity."
         ),
         "tolerance": "|Top Clarity - Bottom Clarity| <= 0.10 (Operator Confirmed)"
     },
@@ -145,23 +145,18 @@ class CalibrationHardwareBridge:
         self.get_camera = camera_getter
         self.simulation_mode = simulation_mode
         self.master_proc: Optional[subprocess.Popen] = None
-        self.sim_r_mm = 186.0
+        self.sim_r_mm = 188.0
         self.sim_t_mm = 0.0
         self.sim_z_mm = 0.0
         self.sim_theta_deg = 0.0
         self.current_pattern = "centerline"
 
     def send_gcode(self, cmd: str) -> str:
-        """
-        Sends G-code (G28, G90, G91, G0, G1, M200, M201) to master_queue if running,
-        or logs in simulation mode.
-        """
         cmd = cmd.strip()
         if self.simulation_mode:
             time.sleep(0.03)
             return f"[SIM GCODE] {cmd}"
 
-        # Hook into master_queue stdin if launched as a managed subprocess
         if self.master_proc and self.master_proc.stdin:
             try:
                 self.master_proc.stdin.write((cmd + "\n").encode("utf-8"))
@@ -172,22 +167,13 @@ class CalibrationHardwareBridge:
         return f"[NO MASTER_QUEUE PIPE] {cmd}"
 
     def set_projector_pattern(self, pattern_name: str) -> str:
-        """
-        Switches DLPC900 test pattern:
-          - 'centerline': horizontal/vertical 1-px alignment line
-          - 'center_square': 15x15 px center square
-          - 'top_bottom_squares': top & bottom edge squares for tilt check
-          - 'radial_dots': center + outer R dot pattern
-        """
         self.current_pattern = pattern_name
         if self.simulation_mode:
             return f"[SIM PROJECTOR] Pattern -> {pattern_name}"
-        # Replace/extend with your DLPC900 / window_manager IPC trigger
         return f"[PROJECTOR] Pattern -> {pattern_name}"
 
     def move_r_mm(self, target_r_mm: float) -> str:
         self.sim_r_mm = target_r_mm
-        # Map R position relative to soft bounds (adjust offset to match limit switch)
         steps = -int(round(target_r_mm / self.MM_PER_MICROSTEP))
         steps = max(self.R_BOUNDS[0], min(self.R_BOUNDS[1], steps))
         return self.send_gcode(f"G90\nG0 R{steps}")
@@ -207,10 +193,6 @@ class CalibrationHardwareBridge:
         return self.send_gcode(f"G91\nG0 A{delta_deg:.2f}")
 
     def grab_frame(self) -> np.ndarray:
-        """
-        Grabs a BGR frame from the active OpenCV/Basler camera, or synthesizes a
-        realistic test image when Simulation Mode is enabled.
-        """
         cam = self.get_camera()
         if not self.simulation_mode and cam is not None and cam.isOpened():
             ret, frame = cam.read()
@@ -227,26 +209,24 @@ class CalibrationHardwareBridge:
         ksize = int(min(31, max(1, round(defocus * 8) * 2 + 1)))
 
         if self.current_pattern == "centerline":
-            # Slight 0.18 deg residual tilt
             angle_rad = math.radians(0.18)
             dx = int(200 * math.sin(angle_rad))
             cv2.line(img, (cx - dx, 40), (cx + dx, h - 40), (255, 255, 255), 2)
         elif self.current_pattern == "center_square":
-            sx = int(cx + self.sim_t_mm * 18 + (8 if self.sim_theta_deg >= 179 else 0))
-            sy = int(cy - self.sim_z_mm * 18 - (6 if self.sim_theta_deg >= 179 else 0))
-            cv2.rectangle(img, (sx - 12, sy - 12), (sx + 12, sy + 12), (255, 255, 255), -1)
+            sx = int(cx + self.sim_t_mm * 18 + (18 if self.sim_theta_deg >= 179 else 0))
+            sy = int(cy - self.sim_z_mm * 18 - (14 if self.sim_theta_deg >= 179 else 0))
+            cv2.rectangle(img, (sx - 14, sy - 14), (sx + 14, sy + 14), (255, 255, 255), -1)
         elif self.current_pattern == "top_bottom_squares":
             cv2.rectangle(img, (cx - 14, 50), (cx + 14, 78), (255, 255, 255), -1)
             cv2.rectangle(img, (cx - 14, h - 78), (cx + 14, h - 50), (255, 255, 255), -1)
         elif self.current_pattern == "radial_dots":
             cv2.circle(img, (cx, cy), 6, (255, 255, 255), -1)
-            offset_px = int(45 + self.sim_r_mm * 0.2)
+            offset_px = int(45 + (self.sim_r_mm - 184.0) * 18)
             cv2.circle(img, (cx + offset_px, cy - 4), 6, (255, 255, 255), -1)
 
         if ksize > 1:
             img = cv2.GaussianBlur(img, (ksize, ksize), 0)
 
-        # Add subtle sensor noise
         noise = np.random.normal(0, 3, img.shape).astype(np.int16)
         img = np.clip(img.astype(np.int16) + noise, 0, 255).astype(np.uint8)
         return img
@@ -264,11 +244,10 @@ class CalibrationCV:
         if gray.size == 0:
             return 0.0
         lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        # Normalize into [0, 1] using soft saturation
         return float(min(1.0, lap_var / 600.0))
 
     @staticmethod
-    def measure_line_angle(frame: np.ndarray) -> Tuple[float, np.ndarray]:
+    def measure_line_angle(frame: np.ndarray, tag: str = "") -> Tuple[float, np.ndarray]:
         vis = frame.copy()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
@@ -276,7 +255,6 @@ class CalibrationCV:
         angle_deg = 0.0
         if pts is not None and len(pts) > 10:
             [vx, vy, x0, y0] = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
-            # Angle relative to vertical axis
             angle_deg = math.degrees(math.atan2(float(vx[0]), float(vy[0])))
             if angle_deg > 90:
                 angle_deg -= 180
@@ -288,12 +266,13 @@ class CalibrationCV:
             p1 = (int(x0[0] + t1 * vx[0]), 0)
             p2 = (int(x0[0] + t2 * vx[0]), h)
             cv2.line(vis, p1, p2, (0, 255, 0), 2)
-        cv2.putText(vis, f"Angle Offset: {angle_deg:+.3f} deg", (15, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
+        prefix = f"{tag}: " if tag else ""
+        cv2.putText(vis, f"{prefix}Angle {angle_deg:+.3f} deg", (15, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         return angle_deg, vis
 
     @staticmethod
-    def find_brightest_centroid(frame: np.ndarray) -> Tuple[Tuple[float, float], np.ndarray]:
+    def find_brightest_centroid(frame: np.ndarray, tag: str = "") -> Tuple[Tuple[float, float], np.ndarray]:
         vis = frame.copy()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
@@ -305,8 +284,9 @@ class CalibrationCV:
             cy = m["m01"] / m["m00"]
         cv2.drawMarker(vis, (w // 2, h // 2), (255, 200, 0), cv2.MARKER_CROSS, 24, 2)
         cv2.circle(vis, (int(round(cx)), int(round(cy))), 8, (0, 255, 0), 2)
-        cv2.putText(vis, f"Centroid: ({cx:.1f}, {cy:.1f}) px", (15, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        prefix = f"{tag}: " if tag else ""
+        cv2.putText(vis, f"{prefix}({cx:.1f}, {cy:.1f}) px", (15, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.68, (0, 255, 0), 2)
         return (cx, cy), vis
 
 
@@ -316,6 +296,7 @@ class CalibrationCV:
 class CalibrationStepWorker(QThread):
     log_signal = pyqtSignal(str)
     progress_signal = pyqtSignal(int)
+    initial_image_signal = pyqtSignal(np.ndarray)
     image_signal = pyqtSignal(np.ndarray)
     step_completed = pyqtSignal(str, bool, str, dict)
 
@@ -328,6 +309,7 @@ class CalibrationStepWorker(QThread):
         r_tol_mm: float = 2.0,
         r_step_mm: float = 0.05,
         focus_threshold: float = 0.85,
+        initial_baseline: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
         self.step_id = step_id
@@ -337,6 +319,7 @@ class CalibrationStepWorker(QThread):
         self.r_tol_mm = r_tol_mm
         self.r_step_mm = r_step_mm
         self.focus_threshold = focus_threshold
+        self.initial_baseline = initial_baseline if initial_baseline is not None else {}
         self._abort = False
 
     def abort(self):
@@ -368,43 +351,101 @@ class CalibrationStepWorker(QThread):
         self.progress_signal.emit(15)
         self.log_signal.emit(self.bridge.send_gcode("M200"))  # Projector ON
         self.log_signal.emit(self.bridge.set_projector_pattern("centerline"))
+
+        init_frame = self.bridge.grab_frame()
+        h, w = init_frame.shape[:2]
+        (ix, _), _ = CalibrationCV.find_brightest_centroid(init_frame)
+        init_err = abs(ix - (w / 2.0))
+        ref_err = self.initial_baseline.setdefault("init_err", init_err)
+
+        cv2.putText(init_frame, f"INITIAL: Center Err={ref_err:.2f} px", (15, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 165, 255), 2)
+        self.initial_image_signal.emit(init_frame)
+
         self.progress_signal.emit(50)
         self.log_signal.emit(self.bridge.send_gcode("G28"))   # Home axes
         self.log_signal.emit(self.bridge.move_r_mm(self.r_center_mm))
-        frame = self.bridge.grab_frame()
-        cv2.putText(frame, "SETUP: Verify Centerline & Vial Dimensions", (15, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
-        self.image_signal.emit(frame)
-        self.progress_signal.emit(100)
-        self.step_completed.emit(
-            "setup", True,
-            f"Homed & centered at R={self.r_center_mm:.1f} mm (Vial: "
-            f"{self.cal_data.vial_diameter_mm:.1f}x{self.cal_data.vial_height_mm:.1f} mm).",
-            {}
+
+        cal_frame = self.bridge.grab_frame()
+        (cx, _), _ = CalibrationCV.find_brightest_centroid(cal_frame)
+        cal_err = abs(cx - (w / 2.0))
+        improved = cal_err <= ref_err
+
+        cv2.putText(
+            cal_frame,
+            f"CURRENT: Center Err={cal_err:.2f} px (Init {ref_err:.2f})",
+            (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.62,
+            (0, 255, 0) if improved else (0, 0, 255), 2
         )
+        self.image_signal.emit(cal_frame)
+        self.progress_signal.emit(100)
+
+        if improved:
+            self.step_completed.emit(
+                "setup", True,
+                f"Setup improved alignment ({ref_err:.2f} -> {cal_err:.2f} px); updated R={self.r_center_mm:.1f} mm.",
+                {"r_focus_mm": self.r_center_mm}
+            )
+        else:
+            self.step_completed.emit(
+                "setup", False,
+                f"Not updated: center offset {cal_err:.2f} px > initial {ref_err:.2f} px (no improvement).",
+                {}
+            )
 
     def _run_angle(self):
         self.progress_signal.emit(20)
         self.log_signal.emit(self.bridge.set_projector_pattern("centerline"))
-        time.sleep(0.1)
-        frame = self.bridge.grab_frame()
-        angle_deg, vis = CalibrationCV.measure_line_angle(frame)
-        self.image_signal.emit(vis)
+        time.sleep(0.08)
+        f0 = self.bridge.grab_frame()
+        init_deg, init_vis = CalibrationCV.measure_line_angle(f0, tag="INITIAL")
+        ref_deg = self.initial_baseline.setdefault("init_deg", init_deg)
+        self.initial_image_signal.emit(init_vis)
+
+        time.sleep(0.08)
+        f1 = self.bridge.grab_frame()
+        angle_deg, cal_vis = CalibrationCV.measure_line_angle(f1, tag="CURRENT")
+        self.image_signal.emit(cal_vis)
         self.progress_signal.emit(100)
 
-        passed = abs(angle_deg) <= 0.25
-        msg = (
-            f"Angle offset = {angle_deg:+.3f}° (PASS <= 0.25°)."
-            if passed else
-            f"Angle offset = {angle_deg:+.3f}°. Rotate projector mount by {-angle_deg:+.3f}° and re-run."
-        )
-        self.step_completed.emit("angle", passed, msg, {"angle_offset_deg": angle_deg})
+        # Only update if |new_angle| < |initial_angle|
+        improved = abs(angle_deg) < abs(ref_deg)
+        if improved:
+            passed = abs(angle_deg) <= 0.25
+            msg = (
+                f"Angle improved (|{ref_deg:+.3f}°| -> |{angle_deg:+.3f}°|); updated angle offset = {angle_deg:+.3f}°."
+                if passed else
+                f"Angle improved (|{ref_deg:+.3f}°| -> |{angle_deg:+.3f}°|), but still > 0.25°. Rotate mount by {-angle_deg:+.3f}°."
+            )
+            self.step_completed.emit("angle", passed, msg, {"angle_offset_deg": angle_deg})
+        else:
+            msg = (
+                f"Not updated: |{angle_deg:+.3f}°| >= initial |{ref_deg:+.3f}°| "
+                f"(no improvement; kept {self.cal_data.angle_offset_deg:+.3f}°)."
+            )
+            self.step_completed.emit("angle", False, msg, {})
 
     def _run_r_focus(self):
         self.log_signal.emit(self.bridge.set_projector_pattern("center_square"))
+        orig_r = self.cal_data.r_focus_mm
         r_start = self.r_center_mm + self.r_tol_mm
         r_end = self.r_center_mm - self.r_tol_mm
         n_steps = max(1, int(round((r_start - r_end) / self.r_step_mm)))
+
+        # Capture Initial (Uncalibrated) frame at the start of the sweep
+        self.bridge.move_r_mm(r_start)
+        init_frame = self.bridge.grab_frame()
+        init_gray = cv2.cvtColor(init_frame, cv2.COLOR_BGR2GRAY)
+        h, w = init_gray.shape
+        roi = (w // 2 - 60, h // 2 - 60, 120, 120)
+        init_score = CalibrationCV.compute_sharpness(init_gray, roi)
+        ref_score = self.initial_baseline.setdefault("init_score", init_score)
+
+        init_vis = init_frame.copy()
+        cv2.rectangle(init_vis, (roi[0], roi[1]), (roi[0] + roi[2], roi[1] + roi[3]), (0, 165, 255), 2)
+        cv2.putText(init_vis, f"INITIAL: R={r_start:.2f} mm | Sharpness={ref_score:.2f}",
+                    (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 165, 255), 2)
+        self.initial_image_signal.emit(init_vis)
 
         best_r = self.r_center_mm
         best_score = -1.0
@@ -417,35 +458,45 @@ class CalibrationStepWorker(QThread):
             self.bridge.move_r_mm(r_pos)
             frame = self.bridge.grab_frame()
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            h, w = gray.shape
-            roi = (w // 2 - 60, h // 2 - 60, 120, 120)
             score = CalibrationCV.compute_sharpness(gray, roi)
 
             vis = frame.copy()
             color = (0, 255, 0) if score >= self.focus_threshold else (0, 165, 255)
             cv2.rectangle(vis, (roi[0], roi[1]), (roi[0] + roi[2], roi[1] + roi[3]), color, 2)
-            cv2.putText(vis, f"R={r_pos:.2f} mm | Sharpness={score:.2f} (Target>={self.focus_threshold:.2f})",
-                        (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            cv2.putText(
+                vis,
+                f"CURRENT: R={r_pos:.2f} mm | Sharpness={score:.2f} (Init {ref_score:.2f})",
+                (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.58, color, 2
+            )
             self.image_signal.emit(vis)
             self.progress_signal.emit(int(100 * (i + 1) / (n_steps + 1)))
 
             if score > best_score:
                 best_score = score
                 best_r = r_pos
-                best_vis = vis
+                best_vis = vis.copy()
+                cv2.putText(
+                    best_vis,
+                    f"Delta Sharpness: {best_score - ref_score:+.2f}",
+                    (15, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 255, 0), 2
+                )
 
-        self.bridge.move_r_mm(best_r)
-        if best_vis is not None:
-            self.image_signal.emit(best_vis)
-
-        passed = best_score >= self.focus_threshold
-        msg = (
-            f"Focus locked at R = {best_r:.2f} mm (score {best_score:.2f} >= {self.focus_threshold:.2f})."
-            if passed else
-            f"Best R = {best_r:.2f} mm (score {best_score:.2f} < {self.focus_threshold:.2f}). "
-            "Widen range or accept if visually sharp."
-        )
-        self.step_completed.emit("r_focus", passed, msg, {"r_focus_mm": best_r, "r_focus_score": best_score})
+        improved = best_score > ref_score
+        if improved:
+            self.bridge.move_r_mm(best_r)
+            if best_vis is not None:
+                self.image_signal.emit(best_vis)
+            passed = best_score >= self.focus_threshold
+            msg = (
+                f"Focus improved ({ref_score:.2f} -> {best_score:.2f}); updated R = {best_r:.2f} mm."
+                if passed else
+                f"Focus improved ({ref_score:.2f} -> {best_score:.2f}) at R = {best_r:.2f} mm, but below {self.focus_threshold:.2f}."
+            )
+            self.step_completed.emit("r_focus", passed, msg, {"r_focus_mm": best_r, "r_focus_score": best_score})
+        else:
+            self.bridge.move_r_mm(orig_r)
+            msg = f"Not updated: sharpness {best_score:.2f} <= initial {ref_score:.2f} (kept R = {orig_r:.2f} mm)."
+            self.step_completed.emit("r_focus", False, msg, {})
 
     def _run_tilt_check(self):
         self.log_signal.emit(self.bridge.set_projector_pattern("top_bottom_squares"))
@@ -459,24 +510,42 @@ class CalibrationStepWorker(QThread):
         bot_score = CalibrationCV.compute_sharpness(gray, bot_roi)
         diff = abs(top_score - bot_score)
 
-        vis = frame.copy()
-        cv2.rectangle(vis, (top_roi[0], top_roi[1]), (top_roi[0] + top_roi[2], top_roi[1] + top_roi[3]), (255, 200, 0), 2)
-        cv2.rectangle(vis, (bot_roi[0], bot_roi[1]), (bot_roi[0] + bot_roi[2], bot_roi[1] + bot_roi[3]), (255, 200, 0), 2)
-        cv2.putText(vis, f"Top Clarity: {top_score:.2f} | Bottom Clarity: {bot_score:.2f} | Diff: {diff:.2f}",
-                    (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 255), 2)
-        self.image_signal.emit(vis)
+        first_run = "init_diff" not in self.initial_baseline
+        ref_diff = self.initial_baseline.setdefault("init_diff", diff)
+
+        init_vis = frame.copy()
+        cv2.rectangle(init_vis, (top_roi[0], top_roi[1]), (top_roi[0] + top_roi[2], top_roi[1] + top_roi[3]), (0, 165, 255), 2)
+        cv2.rectangle(init_vis, (bot_roi[0], bot_roi[1]), (bot_roi[0] + bot_roi[2], bot_roi[1] + bot_roi[3]), (0, 165, 255), 2)
+        cv2.putText(init_vis, f"INITIAL: Top={top_score:.2f} | Bot={bot_score:.2f} | Diff={ref_diff:.2f}",
+                    (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (0, 165, 255), 2)
+        self.initial_image_signal.emit(init_vis)
+
+        has_prior = (self.cal_data.tilt_top_clarity > 0.0) or (self.cal_data.tilt_bottom_clarity > 0.0)
+        improved = (diff < ref_diff) or (first_run and not has_prior and diff <= 0.10)
+
+        cur_vis = frame.copy()
+        box_color = (0, 255, 0) if improved else (0, 0, 255)
+        cv2.rectangle(cur_vis, (top_roi[0], top_roi[1]), (top_roi[0] + top_roi[2], top_roi[1] + top_roi[3]), box_color, 2)
+        cv2.rectangle(cur_vis, (bot_roi[0], bot_roi[1]), (bot_roi[0] + bot_roi[2], bot_roi[1] + bot_roi[3]), box_color, 2)
+        cv2.putText(cur_vis, f"CURRENT: Top={top_score:.2f} | Bot={bot_score:.2f} | Diff={diff:.2f} (Init {ref_diff:.2f})",
+                    (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.54, box_color, 2)
+        self.image_signal.emit(cur_vis)
         self.progress_signal.emit(100)
 
-        passed = diff <= 0.10
-        msg = (
-            f"Top ({top_score:.2f}) vs Bottom ({bot_score:.2f}) within tolerance (diff {diff:.2f})."
-            if passed else
-            f"Tilt mismatch: Top={top_score:.2f}, Bottom={bot_score:.2f}. Physically adjust projector tilt, then re-check."
-        )
-        self.step_completed.emit(
-            "tilt", passed, msg,
-            {"tilt_top_clarity": top_score, "tilt_bottom_clarity": bot_score}
-        )
+        if improved:
+            passed = diff <= 0.10
+            msg = (
+                f"Tilt updated: Top={top_score:.2f}, Bot={bot_score:.2f} (Diff={diff:.2f} <= 0.10)."
+                if passed else
+                f"Tilt improved (Diff {ref_diff:.2f} -> {diff:.2f}), still > 0.10. Adjust tilt further and re-run."
+            )
+            self.step_completed.emit(
+                "tilt", passed, msg,
+                {"tilt_top_clarity": top_score, "tilt_bottom_clarity": bot_score}
+            )
+        else:
+            msg = f"Not updated: tilt diff {diff:.2f} >= initial {ref_diff:.2f} (no improvement)."
+            self.step_completed.emit("tilt", False, msg, {})
 
     def _run_r_cal(self):
         self.log_signal.emit(self.bridge.set_projector_pattern("radial_dots"))
@@ -484,8 +553,11 @@ class CalibrationStepWorker(QThread):
         for idx, r_sep in enumerate([1.0, 2.0, 3.0]):
             self.bridge.move_r_mm(self.cal_data.r_focus_mm + r_sep)
             frame = self.bridge.grab_frame()
-            (cx, cy), vis = CalibrationCV.find_brightest_centroid(frame)
+            tag = "INITIAL (+1mm)" if idx == 0 else f"STEP (+{r_sep:.0f}mm)"
+            (cx, cy), vis = CalibrationCV.find_brightest_centroid(frame, tag=tag)
             displacements.append((r_sep, cx, cy))
+            if idx == 0:
+                self.initial_image_signal.emit(vis)
             self.image_signal.emit(vis)
             self.progress_signal.emit(int(100 * (idx + 1) / 3))
 
@@ -494,76 +566,152 @@ class CalibrationStepWorker(QThread):
         dy = displacements[-1][2] - displacements[0][2]
         px_dist = math.hypot(dx, dy)
         mm_per_px = (2.0 / px_dist) if px_dist > 1e-3 else 0.00345
-        msg = f"R-axis scale = {mm_per_px:.5f} mm/px | Vector (dx, dy) = ({dx:.2f}, {dy:.2f}) px."
-        self.step_completed.emit(
-            "r_cal", True, msg,
-            {"mm_per_px": mm_per_px, "r_coupling_dx_dy": (dx, dy)}
-        )
+
+        mid_x = 0.5 * (displacements[0][1] + displacements[-1][1])
+        mid_y = 0.5 * (displacements[0][2] + displacements[-1][2])
+        cal_err_px = math.hypot(displacements[1][1] - mid_x, displacements[1][2] - mid_y)
+        prev_scale = self.cal_data.mm_per_px if self.cal_data.mm_per_px > 0 else 0.00345
+        init_err_px = abs((2.0 / prev_scale) - px_dist)
+        ref_err_px = self.initial_baseline.setdefault("init_err_px", init_err_px)
+
+        improved = (px_dist > 1e-3) and (cal_err_px < ref_err_px)
+        if improved:
+            msg = (
+                f"R-axis scale improved error ({ref_err_px:.2f} -> {cal_err_px:.2f} px); "
+                f"updated scale = {mm_per_px:.5f} mm/px | (dx, dy) = ({dx:.2f}, {dy:.2f}) px."
+            )
+            self.step_completed.emit(
+                "r_cal", True, msg,
+                {"mm_per_px": mm_per_px, "r_coupling_dx_dy": (dx, dy)}
+            )
+        else:
+            msg = (
+                f"Not updated: R-axis scale residual {cal_err_px:.2f} px >= initial {ref_err_px:.2f} px "
+                f"(kept {self.cal_data.mm_per_px:.5f} mm/px)."
+            )
+            self.step_completed.emit("r_cal", False, msg, {})
 
     def _run_t_cal(self):
         self.log_signal.emit(self.bridge.set_projector_pattern("center_square"))
         f0 = self.bridge.grab_frame()
-        (x0, y0), _ = CalibrationCV.find_brightest_centroid(f0)
+        (x0, y0), init_vis = CalibrationCV.find_brightest_centroid(f0, tag="INITIAL T=0")
+        self.initial_image_signal.emit(init_vis)
         self.progress_signal.emit(35)
 
         self.log_signal.emit(self.bridge.jog_t_mm(5.0))
         f1 = self.bridge.grab_frame()
-        (x1, y1), vis = CalibrationCV.find_brightest_centroid(f1)
+        (x1, y1), vis = CalibrationCV.find_brightest_centroid(f1, tag="JOGGED T+5mm")
         cv2.line(vis, (int(x0), int(y0)), (int(x1), int(y1)), (0, 255, 255), 2)
         self.image_signal.emit(vis)
-        self.progress_signal.emit(75)
+        self.progress_signal.emit(70)
 
         self.log_signal.emit(self.bridge.jog_t_mm(-5.0))  # Return T to 0
+        f_ret = self.bridge.grab_frame()
+        (x_ret, y_ret), _ = CalibrationCV.find_brightest_centroid(f_ret)
         self.progress_signal.emit(100)
-        dx, dy = (x1 - x0) / 5.0, (y1 - y0) / 5.0
-        msg = f"T-axis coupling = ({dx:.2f}, {dy:.2f}) px/mm. Returned T to 0."
-        self.step_completed.emit("t_cal", True, msg, {"t_coupling_dx_dy": (dx, dy)})
+
+        jog_shift_px = math.hypot(x1 - x0, y1 - y0)
+        ret_err_px = math.hypot(x_ret - x0, y_ret - y0)
+        prev_best_err = self.initial_baseline.get("best_ret_err", float("inf"))
+
+        improved = (jog_shift_px > 1.0) and (ret_err_px < jog_shift_px) and (ret_err_px < prev_best_err)
+        if improved:
+            self.initial_baseline["best_ret_err"] = ret_err_px
+            dx, dy = (x1 - x0) / 5.0, (y1 - y0) / 5.0
+            msg = f"T-axis coupling updated = ({dx:.2f}, {dy:.2f}) px/mm (return err {ret_err_px:.2f} < shift {jog_shift_px:.2f} px)."
+            self.step_completed.emit("t_cal", True, msg, {"t_coupling_dx_dy": (dx, dy)})
+        else:
+            msg = (
+                f"Not updated: T-axis return error ({ret_err_px:.2f} px) did not improve over "
+                f"initial/previous ({min(jog_shift_px, prev_best_err):.2f} px)."
+            )
+            self.step_completed.emit("t_cal", False, msg, {})
 
     def _run_z_cal(self):
         self.log_signal.emit(self.bridge.set_projector_pattern("center_square"))
         f0 = self.bridge.grab_frame()
-        (x0, y0), _ = CalibrationCV.find_brightest_centroid(f0)
+        (x0, y0), init_vis = CalibrationCV.find_brightest_centroid(f0, tag="INITIAL Z=0")
+        self.initial_image_signal.emit(init_vis)
         self.progress_signal.emit(35)
 
         self.log_signal.emit(self.bridge.jog_z_mm(5.0))
         f1 = self.bridge.grab_frame()
-        (x1, y1), vis = CalibrationCV.find_brightest_centroid(f1)
+        (x1, y1), vis = CalibrationCV.find_brightest_centroid(f1, tag="JOGGED Z+5mm")
         cv2.line(vis, (int(x0), int(y0)), (int(x1), int(y1)), (255, 0, 255), 2)
         self.image_signal.emit(vis)
-        self.progress_signal.emit(75)
+        self.progress_signal.emit(70)
 
         self.log_signal.emit(self.bridge.jog_z_mm(-5.0))  # Return Z to 0
+        f_ret = self.bridge.grab_frame()
+        (x_ret, y_ret), _ = CalibrationCV.find_brightest_centroid(f_ret)
         self.progress_signal.emit(100)
-        dx, dy = (x1 - x0) / 5.0, (y1 - y0) / 5.0
-        msg = f"Z-axis coupling = ({dx:.2f}, {dy:.2f}) px/mm. Returned Z to 0."
-        self.step_completed.emit("z_cal", True, msg, {"z_coupling_dx_dy": (dx, dy)})
+
+        jog_shift_px = math.hypot(x1 - x0, y1 - y0)
+        ret_err_px = math.hypot(x_ret - x0, y_ret - y0)
+        prev_best_err = self.initial_baseline.get("best_ret_err", float("inf"))
+
+        improved = (jog_shift_px > 1.0) and (ret_err_px < jog_shift_px) and (ret_err_px < prev_best_err)
+        if improved:
+            self.initial_baseline["best_ret_err"] = ret_err_px
+            dx, dy = (x1 - x0) / 5.0, (y1 - y0) / 5.0
+            msg = f"Z-axis coupling updated = ({dx:.2f}, {dy:.2f}) px/mm (return err {ret_err_px:.2f} < shift {jog_shift_px:.2f} px)."
+            self.step_completed.emit("z_cal", True, msg, {"z_coupling_dx_dy": (dx, dy)})
+        else:
+            msg = (
+                f"Not updated: Z-axis return error ({ret_err_px:.2f} px) did not improve over "
+                f"initial/previous ({min(jog_shift_px, prev_best_err):.2f} px)."
+            )
+            self.step_completed.emit("z_cal", False, msg, {})
 
     def _run_centricity(self):
         self.log_signal.emit(self.bridge.set_projector_pattern("center_square"))
         self.log_signal.emit(self.bridge.send_gcode("G28"))
         f0 = self.bridge.grab_frame()
-        (x0, y0), _ = CalibrationCV.find_brightest_centroid(f0)
-        self.progress_signal.emit(40)
+        h, w = f0.shape[:2]
+        (x0, y0), init_vis = CalibrationCV.find_brightest_centroid(f0, tag="INITIAL 0 deg")
+        self.initial_image_signal.emit(init_vis)
+        self.progress_signal.emit(35)
 
         self.log_signal.emit(self.bridge.rotate_stage_deg(180.0))
         f180 = self.bridge.grab_frame()
-        (x180, y180), vis = CalibrationCV.find_brightest_centroid(f180)
-        cv2.line(vis, (int(x0), int(y0)), (int(x180), int(y180)), (0, 0, 255), 2)
-        self.image_signal.emit(vis)
-        self.progress_signal.emit(100)
+        (x180, y180), _ = CalibrationCV.find_brightest_centroid(f180)
+        self.progress_signal.emit(70)
 
         scale = self.cal_data.mm_per_px if self.cal_data.mm_per_px > 0 else 0.00345
         ecc_r_mm = 0.5 * (x180 - x0) * scale
         ecc_t_mm = 0.5 * (y180 - y0) * scale
-        err_px = math.hypot(x180 - x0, y180 - y0)
-        msg = (
-            f"180° shift = {err_px:.1f} px -> Half-offset (R, T) = "
-            f"({ecc_r_mm:+.4f}, {ecc_t_mm:+.4f}) mm."
-        )
-        self.step_completed.emit(
-            "centricity", True, msg,
-            {"centricity_offset_mm": (ecc_r_mm, ecc_t_mm)}
-        )
+        init_err_px = 0.5 * math.hypot(x180 - x0, y180 - y0)
+        ref_err_px = self.initial_baseline.setdefault("init_err_px", init_err_px)
+
+        self.log_signal.emit(self.bridge.move_r_mm(self.cal_data.r_focus_mm - ecc_r_mm))
+        self.log_signal.emit(self.bridge.jog_t_mm(-ecc_t_mm))
+        f_cal = self.bridge.grab_frame()
+        (x_cal, y_cal), vis = CalibrationCV.find_brightest_centroid(f_cal, tag="CORRECTED 180 deg")
+        cv2.line(vis, (int(x0), int(y0)), (int(x_cal), int(y_cal)), (0, 0, 255), 2)
+        self.image_signal.emit(vis)
+        self.progress_signal.emit(100)
+
+        cal_err_px = math.hypot(x_cal - (w / 2.0), y_cal - (h / 2.0))
+        improved = cal_err_px < ref_err_px
+
+        if improved:
+            passed = cal_err_px <= 3.0
+            msg = (
+                f"Centricity improved ({ref_err_px:.1f} -> {cal_err_px:.1f} px); "
+                f"updated offset (R, T) = ({ecc_r_mm:+.4f}, {ecc_t_mm:+.4f}) mm."
+            )
+            self.step_completed.emit(
+                "centricity", passed, msg,
+                {"centricity_offset_mm": (ecc_r_mm, ecc_t_mm)}
+            )
+        else:
+            self.log_signal.emit(self.bridge.move_r_mm(self.cal_data.r_focus_mm))
+            self.log_signal.emit(self.bridge.jog_t_mm(ecc_t_mm))
+            msg = (
+                f"Not updated: residual offset {cal_err_px:.1f} px >= initial {ref_err_px:.1f} px "
+                f"(no improvement)."
+            )
+            self.step_completed.emit("centricity", False, msg, {})
 
 
 # ==============================================================================
@@ -575,8 +723,8 @@ class HeliCALGui(QMainWindow):
     """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HeliCAL Control Panel")
-        self.resize(1180, 760)
+        self.setWindowTitle("HeliCAL Automated Alignment GUI")
+        self.resize(1320, 780)
 
         # Placeholders for serial & camera
         self.serial_port = None
@@ -590,6 +738,8 @@ class HeliCALGui(QMainWindow):
         self.current_step_idx = 0
         self.step_status: Dict[str, str] = {s["id"]: "Pending" for s in CALIBRATION_STEPS}
         self.cal_worker: Optional[CalibrationStepWorker] = None
+        self.initial_frame_locked = False
+        self.initial_baseline: Dict[str, Any] = {}
         self.last_annotated_frame: Optional[np.ndarray] = None
         self.show_live_feed = True
 
@@ -607,7 +757,7 @@ class HeliCALGui(QMainWindow):
         self._build_balance_tab()
         self._build_camera_tab()
 
-        # Timer for live camera frames (used by both Calibration troubleshooting view & Camera tab)
+        # Timer for live camera frames
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
 
@@ -621,7 +771,7 @@ class HeliCALGui(QMainWindow):
         # Left Panel: Step List & Hardware/Tolerance Parameters
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_panel.setMaximumWidth(350)
+        left_panel.setMaximumWidth(330)
 
         left_layout.addWidget(QLabel("<b>Calibration Sequence</b>"))
         self.step_list = QListWidget()
@@ -676,7 +826,7 @@ class HeliCALGui(QMainWindow):
         btn_save_cal.clicked.connect(self.save_calibration_json)
         left_layout.addWidget(btn_save_cal)
 
-        # Right Panel: Active Step Banner, Troubleshooting Camera, Controls & Log
+        # Right Panel: Active Step Banner, Side-by-Side Comparison Views, Controls & Log
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
 
@@ -717,34 +867,54 @@ class HeliCALGui(QMainWindow):
         self.btn_run_step.setStyleSheet("font-weight: bold; padding: 8px;")
         self.btn_run_step.clicked.connect(self.run_current_calibration_step)
 
-        self.btn_toggle_view = QPushButton("View: Live Feed (Click for Snapshot)")
+        self.btn_reset_initial = QPushButton("Reset Initial Snapshot")
+        self.btn_reset_initial.clicked.connect(self.reset_initial_snapshot)
+
+        self.btn_toggle_view = QPushButton("Right View: Live Feed (Click for Snapshot)")
         self.btn_toggle_view.clicked.connect(self.toggle_cal_camera_view)
 
-        self.btn_next_step = QPushButton("Confirm & Move to Next Step ->")
+        self.btn_next_step = QPushButton("Confirm && Move to Next Step ->")
         self.btn_next_step.setStyleSheet("font-weight: bold; padding: 8px;")
         self.btn_next_step.clicked.connect(self.advance_to_next_step)
 
         btn_row.addWidget(self.btn_run_step)
+        btn_row.addWidget(self.btn_reset_initial)
         btn_row.addWidget(self.btn_toggle_view)
         btn_row.addWidget(self.btn_next_step)
         right_layout.addLayout(btn_row)
 
-        # Troubleshooting Camera View + Log Splitter
+        # Side-by-Side Image Comparison + Log Splitter
         splitter = QSplitter(Qt.Vertical)
 
-        cam_container = QWidget()
-        cam_layout = QVBoxLayout(cam_container)
-        cam_layout.setContentsMargins(0, 0, 0, 0)
-        self.lbl_cal_camera = QLabel("Camera Feed / Troubleshooting Overlay")
-        self.lbl_cal_camera.setAlignment(Qt.AlignCenter)
-        self.lbl_cal_camera.setMinimumHeight(280)
-        self.lbl_cal_camera.setStyleSheet("background-color: #111; color: #ddd; border: 1px solid #444;")
-        cam_layout.addWidget(self.lbl_cal_camera)
-        splitter.addWidget(cam_container)
+        comparison_container = QWidget()
+        comparison_layout = QHBoxLayout(comparison_container)
+        comparison_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Left Image Box: Initial (Before)
+        init_group = QGroupBox("1. Initial Image (Before Calibration)")
+        init_box_layout = QVBoxLayout(init_group)
+        self.lbl_cal_initial = QLabel("Initial image will appear here when step starts")
+        self.lbl_cal_initial.setAlignment(Qt.AlignCenter)
+        self.lbl_cal_initial.setMinimumSize(360, 260)
+        self.lbl_cal_initial.setStyleSheet("background-color: #111; color: #bbb; border: 1px solid #555;")
+        init_box_layout.addWidget(self.lbl_cal_initial)
+
+        # Right Image Box: Calibrated / Current (After)
+        cal_group = QGroupBox("2. Current / Calibrated Image (After Changes)")
+        cal_box_layout = QVBoxLayout(cal_group)
+        self.lbl_cal_calibrated = QLabel("Live / Calibrated image will appear here")
+        self.lbl_cal_calibrated.setAlignment(Qt.AlignCenter)
+        self.lbl_cal_calibrated.setMinimumSize(360, 260)
+        self.lbl_cal_calibrated.setStyleSheet("background-color: #111; color: #ddd; border: 1px solid #555;")
+        cal_box_layout.addWidget(self.lbl_cal_calibrated)
+
+        comparison_layout.addWidget(init_group, stretch=1)
+        comparison_layout.addWidget(cal_group, stretch=1)
+        splitter.addWidget(comparison_container)
 
         self.cal_log = QTextEdit()
         self.cal_log.setReadOnly(True)
-        self.cal_log.setMaximumHeight(150)
+        self.cal_log.setMaximumHeight(140)
         splitter.addWidget(self.cal_log)
 
         right_layout.addWidget(splitter, stretch=1)
@@ -833,9 +1003,17 @@ class HeliCALGui(QMainWindow):
         if checked and not self.timer.isActive():
             self.timer.start(60)
 
+    def reset_initial_snapshot(self):
+        self.initial_frame_locked = False
+        self.initial_baseline.clear()
+        self.lbl_cal_initial.clear()
+        self.lbl_cal_initial.setText("Initial image cleared.\nNext run will capture a new baseline.")
+        self.cal_log.append("Cleared initial baseline image and metrics; next step run will capture a fresh baseline.")
+
     def _on_step_selected(self, row: int):
         if 0 <= row < len(CALIBRATION_STEPS):
             self.current_step_idx = row
+            self.reset_initial_snapshot()
             self._refresh_step_ui()
 
     def _refresh_step_ui(self):
@@ -854,8 +1032,8 @@ class HeliCALGui(QMainWindow):
 
         if step["id"] == "tilt":
             self.lbl_prompt_banner.setText(
-                "Manual Step: Click 'Run Current Step' to measure Top vs. Bottom square clarity, "
-                "physically tilt/rotate the projector if needed, then click 'Confirm & Move to Next Step ->'."
+                "Manual Step: Click '▶ Run Current Step' to capture the Initial baseline on the left, "
+                "physically tilt/rotate the projector, and re-run to compare before vs. after on the right."
             )
             self.lbl_prompt_banner.setStyleSheet(
                 "background-color: #fff8e6; border: 1px solid #f0c36d; padding: 8px; border-radius: 4px;"
@@ -863,7 +1041,7 @@ class HeliCALGui(QMainWindow):
         else:
             self.lbl_prompt_banner.setText(
                 f"Step {self.current_step_idx + 1} of {len(CALIBRATION_STEPS)}: "
-                "Click '▶ Run Current Step' to execute automated alignment & CV verification."
+                "Click '▶ Run Current Step' to capture Initial (left) and Calibrated (right) images."
             )
             self.lbl_prompt_banner.setStyleSheet(
                 "background-color: #eef5ff; border: 1px solid #99c2ff; padding: 8px; border-radius: 4px;"
@@ -876,13 +1054,12 @@ class HeliCALGui(QMainWindow):
         if self.cal_worker and self.cal_worker.isRunning():
             return
 
-        # Sync latest UI inputs into CalibrationData
         self.cal_data.vial_diameter_mm = self.spin_vial_diam.value()
         self.cal_data.vial_height_mm = self.spin_vial_height.value()
 
         step = CALIBRATION_STEPS[self.current_step_idx]
         self.btn_run_step.setEnabled(False)
-        self.lbl_prompt_banner.setText(f"Running {step['title']}... Watch camera troubleshooting view.")
+        self.lbl_prompt_banner.setText(f"Running {step['title']}... Compare Initial (left) vs. Current (right).")
         self.cal_log.append(f"--- Starting {step['title']} ---")
 
         self.cal_worker = CalibrationStepWorker(
@@ -893,24 +1070,32 @@ class HeliCALGui(QMainWindow):
             r_tol_mm=self.spin_r_tol.value(),
             r_step_mm=0.05,
             focus_threshold=self.spin_focus_thresh.value(),
+            initial_baseline=self.initial_baseline,
         )
         self.cal_worker.log_signal.connect(self.cal_log.append)
         self.cal_worker.progress_signal.connect(self.step_progress.setValue)
-        self.cal_worker.image_signal.connect(self._on_troubleshooting_frame)
+        self.cal_worker.initial_image_signal.connect(self._on_initial_frame)
+        self.cal_worker.image_signal.connect(self._on_calibrated_frame)
         self.cal_worker.step_completed.connect(self._on_step_completed)
         self.cal_worker.start()
 
-    def _on_troubleshooting_frame(self, bgr_frame: np.ndarray):
+    def _on_initial_frame(self, bgr_frame: np.ndarray):
+        if not self.initial_frame_locked:
+            self._display_bgr_on_label(bgr_frame, self.lbl_cal_initial)
+            self.initial_frame_locked = True
+
+    def _on_calibrated_frame(self, bgr_frame: np.ndarray):
         self.last_annotated_frame = bgr_frame
         self.show_live_feed = False
-        self.btn_toggle_view.setText("View: Troubleshooting Snapshot (Click for Live)")
-        self._display_bgr_on_label(bgr_frame, self.lbl_cal_camera)
+        self.btn_toggle_view.setText("Right View: Calibrated Snapshot (Click for Live)")
+        self._display_bgr_on_label(bgr_frame, self.lbl_cal_calibrated)
 
     def _on_step_completed(self, step_id: str, passed: bool, message: str, results: Dict[str, Any]):
         self.btn_run_step.setEnabled(True)
-        for k, v in results.items():
-            if hasattr(self.cal_data, k):
-                setattr(self.cal_data, k, v)
+        if results:
+            for k, v in results.items():
+                if hasattr(self.cal_data, k):
+                    setattr(self.cal_data, k, v)
 
         self.step_status[step_id] = "PASS" if passed else "CHECK"
         self._refresh_step_ui()
@@ -919,14 +1104,14 @@ class HeliCALGui(QMainWindow):
 
         if passed:
             self.lbl_prompt_banner.setText(
-                f"✓ {message}  Prompt: Verify troubleshooting image below, then click 'Confirm & Move to Next Step ->'."
+                f"✓ {message}  Compare Initial (left) vs. Calibrated (right), then click 'Confirm && Move to Next Step ->'."
             )
             self.lbl_prompt_banner.setStyleSheet(
                 "background-color: #e8f8ee; border: 1px solid #5cb85c; padding: 8px; border-radius: 4px; font-weight: bold;"
             )
         else:
             self.lbl_prompt_banner.setText(
-                f"⚠ {message}  Adjust hardware if needed and re-run, or click 'Confirm & Move to Next Step ->' to override."
+                f"⚠ {message}  Previous calibration values were preserved."
             )
             self.lbl_prompt_banner.setStyleSheet(
                 "background-color: #fdecea; border: 1px solid #d9534f; padding: 8px; border-radius: 4px; font-weight: bold;"
@@ -936,7 +1121,8 @@ class HeliCALGui(QMainWindow):
         if self.current_step_idx < len(CALIBRATION_STEPS) - 1:
             self.current_step_idx += 1
             self.show_live_feed = True
-            self.btn_toggle_view.setText("View: Live Feed (Click for Snapshot)")
+            self.btn_toggle_view.setText("Right View: Live Feed (Click for Snapshot)")
+            self.reset_initial_snapshot()
             self._refresh_step_ui()
         else:
             QMessageBox.information(
@@ -948,11 +1134,11 @@ class HeliCALGui(QMainWindow):
     def toggle_cal_camera_view(self):
         self.show_live_feed = not self.show_live_feed
         if self.show_live_feed:
-            self.btn_toggle_view.setText("View: Live Feed (Click for Snapshot)")
+            self.btn_toggle_view.setText("Right View: Live Feed (Click for Snapshot)")
         else:
-            self.btn_toggle_view.setText("View: Troubleshooting Snapshot (Click for Live)")
+            self.btn_toggle_view.setText("Right View: Calibrated Snapshot (Click for Live)")
             if self.last_annotated_frame is not None:
-                self._display_bgr_on_label(self.last_annotated_frame, self.lbl_cal_camera)
+                self._display_bgr_on_label(self.last_annotated_frame, self.lbl_cal_calibrated)
 
     def save_calibration_json(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -1044,16 +1230,16 @@ class HeliCALGui(QMainWindow):
         if frame is None:
             return
 
-        # Update Camera tab if active
         if self.lbl_camera.isVisible():
             self._display_bgr_on_label(frame, self.lbl_camera)
 
-        # Update Calibration troubleshooting viewport when in Live mode
-        if self.lbl_cal_camera.isVisible() and self.show_live_feed:
+        if self.lbl_cal_calibrated.isVisible() and self.show_live_feed:
             overlay = frame.copy()
             h, w = overlay.shape[:2]
             cv2.drawMarker(overlay, (w // 2, h // 2), (0, 255, 255), cv2.MARKER_CROSS, 20, 1)
-            self._display_bgr_on_label(overlay, self.lbl_cal_camera)
+            cv2.putText(overlay, "LIVE FEED", (15, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+            self._display_bgr_on_label(overlay, self.lbl_cal_calibrated)
 
     def closeEvent(self, event):
         self.timer.stop()
